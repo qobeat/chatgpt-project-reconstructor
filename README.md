@@ -33,10 +33,23 @@ to the next version. Output is flat JSON ready for agentic/Cursor workflows.
 ## 🚀 Fast start
 ```bash
 cd chatgpt-project-reconstructor
-pip install -r requirements.txt          # ijson (recommended for GB zips)
+bash setup.sh           # creates .venv, installs ijson, writes run.sh + ollama.sh
+bash run.sh --zip "/mnt/c/Users/kirae/Downloads/ChatGpt/<export>.zip"
+```
 
-# Deterministic stages (no LLM): point at your NEWEST export (snapshots are cumulative)
-python run.py --zip "/mnt/c/Users/kirae/Downloads/ChatGpt/<latest>.zip"
+`setup.sh` does the following:
+
+- Finds Python 3.10+ automatically (tries 3.12 → 3.11 → 3.10 → `python3`)
+- Creates `.venv` in the project root (no system-wide writes, no `--break-system-packages`)
+- Installs `ijson` into the venv; if the C build fails (no gcc) it prints a warning and falls back gracefully to the stdlib path (works, just loads large files into RAM)
+- Writes two executable wrappers into the project root: `run.sh` (Stages 1–3) and `ollama.sh` (Stage 4)
+
+If you prefer the manual activate style instead:
+```bash
+source .venv/bin/activate
+python run.py --zip "..."
+deactivate
+```
 
 # Inspect deterministic results before spending any tokens:
 cat output/store/clusters.json | less
