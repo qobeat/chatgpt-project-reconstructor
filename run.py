@@ -39,8 +39,11 @@ def main() -> int:
                     help="Bundle directory (default: output/bundles).")
     ap.add_argument("--min-slug-votes", type=int, default=3,
                     help="Clustering slug-vote threshold (default: 3).")
-    ap.add_argument("--char-budget", type=int, default=48000,
-                    help="Max chars per LLM bundle (default: 48000).")
+    ap.add_argument("--char-budget", type=int, default=24000,
+                    help="Max chars per LLM bundle (default: 24000).")
+    ap.add_argument("--min-versions", type=int, default=1,
+                    help="Bundle only clusters with >= N version zips "
+                         "(default: 1 = projects; 0 = all).")
     ap.add_argument("--verbose", action="store_true",
                     help="Verbose per-file read/write logging.")
     args = ap.parse_args()
@@ -56,7 +59,8 @@ def main() -> int:
     run("cluster_projects.py", "--store", args.store,
         "--min-slug-votes", str(args.min_slug_votes))
     run("build_bundles.py", "--store", args.store, "--out", args.bundles,
-        "--char-budget", str(args.char_budget))
+        "--char-budget", str(args.char_budget),
+        "--min-versions", str(args.min_versions))
 
     sys.stderr.write(
         "\n[next] LLM summary step (pick one):\n"

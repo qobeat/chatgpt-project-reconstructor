@@ -35,11 +35,19 @@ def main() -> int:
             print(f"  {info.file_size:>14,}  {info.filename}")
 
         try:
-            entry = P.find_conversations_entry(zf)
+            entries = P.find_conversations_entries(zf)
         except FileNotFoundError as e:
             print(f"\n[error] {e}")
             return 1
-        print(f"\nselected entry: {entry}")
+        print(f"\nconversation shards: {len(entries)}")
+        for e in entries[:50]:
+            try:
+                sz = zf.getinfo(e).file_size
+            except KeyError:
+                sz = -1
+            print(f"  {sz:>14,}  {e}")
+        entry = entries[0]
+        print(f"\nprobing first shard: {entry}")
 
         with zf.open(entry, "r") as fh:
             head = fh.read(400)

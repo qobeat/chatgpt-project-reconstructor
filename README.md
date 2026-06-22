@@ -26,9 +26,17 @@ to the next version. Output is flat JSON ready for agentic/Cursor workflows.
 ## ⚙️ Pipeline
 ```
 .zip ──▶ extract_cards ──▶ cluster_projects ──▶ build_bundles ──▶ [LLM] ──▶ reconstructed_projects.json
-        (stream, canonical   (union-find on       (token-capped     (Cursor or
-         path, reduce)        zip-basename slugs)   per-project)      Ollama)
+        (stream ALL          (union-find on       (projects only,    (Cursor or
+         conversations-*      zip-basename slugs)   token-capped)      Ollama)
+         shards, canonical
+         path, reduce)
 ```
+Modern exports shard conversations across `conversations-000.json … -NNN.json`
+(plus a `chat.html` and hundreds of `file-*.dat` attachments) — all shards are
+streamed; sidecars and attachments are ignored. Only clusters that look like
+real **projects** (≥1 version `.zip`, or ≥2 conversations) are bundled/summarized
+by default; raw one-off chats (math questions, support threads) are skipped. Use
+`--min-versions 0` to include everything.
 
 ## 🚀 Fast start
 ```bash
@@ -48,6 +56,10 @@ ls output/bundles/
 # 4. Stage 4 — LLM summary, choose ONE:
 #    A) Local Ollama (offline):
 ./ollama.sh --model gpt-oss:20b
+#       Only ~projects are summarized (not every chat). If a call 500s or stalls:
+#       ./ollama.sh --model gpt-oss:20b --num-ctx 16384 --timeout 180
+#       or use a faster non-thinking model:
+#       ./ollama.sh --model qwen2.5-coder:14b --num-ctx 16384
 #    B) Cursor: attach schema/project_history_schema.json + output/bundles/<slug>.md,
 #       paste prompts/cursor_extraction_prompt.md (run once per bundle).
 ```
@@ -94,6 +106,14 @@ re-cluster/re-summarize. No need to reprocess history.
 - **Bundle truncation**: raise `--char-budget` (keep under your model context).
 - **Different LLM**: edit `scripts/summarize_ollama.py` (any Ollama model) or use
   the Cursor prompt with any assistant.
+- **LLM call 500 / too slow**: the summarizer sends `think:false`, caps context,
+  truncates bundles, and retries with halved context on error. Tune with
+  `--num-ctx`, `--timeout`, `--max-chars`, or switch `--model` to a faster
+  non-thinking model. `gpt-oss:20b` at 64k ctx can OOM a 24 GB GPU — keep
+  `--num-ctx` ≤ 32768.
+- **Project clustering**: a project is detected from its version-zip basename
+  (`<project>-<date>-<label>-v<ver>.zip` → slug `<project>`). One-off chats with
+  no zip are skipped unless `--min-versions 0`.
 - **Schema**: edit `schema/project_history_schema.json`; keep deterministic
   fields authoritative.
 

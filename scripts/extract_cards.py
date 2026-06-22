@@ -56,13 +56,29 @@ def epoch_to_date(ts: Optional[float]) -> Optional[str]:
 
 
 def slug_from_zip(name: str) -> str:
+    """
+    Derive a stable project slug from a version-zip basename by cutting at the
+    first date / timestamp / version / hash token. Handles patterns like:
+      ollama-test-20260622-045835-test-v1_9_0.zip -> ollama-test
+      ollama-test-v1_9.zip                        -> ollama-test
+      ados-arena-2026-06-20-final.zip             -> ados-arena
+    """
     base = re.sub(r"\.zip$", "", name, flags=re.I)
-    base = HEX_RE.sub("", base)
-    base = DATE_RE.sub("", base)
-    base = VER_RE.sub("", base)
+    cut_patterns = (
+        r"[-_ ]\d{4}[-_]\d{2}[-_]\d{2}\b",  # -2026-06-22
+        r"[-_ ]\d{8}\b",                     # -20260622
+        r"[-_ ]\d{6}\b",                     # -045835 (time)
+        r"[-_ ]v\d",                          # -v1
+        r"[0-9a-f]{12,}",                    # long hex hash
+    )
+    cut = len(base)
+    for pat in cut_patterns:
+        m = re.search(pat, base, re.I)
+        if m:
+            cut = min(cut, m.start())
+    base = base[:cut]
     base = SLUG_STRIP.sub("-", base.lower()).strip("-")
-    base = re.sub(r"-{2,}", "-", base)
-    return base
+    return re.sub(r"-{2,}", "-", base)
 
 
 def slug_from_title(title: str) -> str:
@@ -70,8 +86,12 @@ def slug_from_title(title: str) -> str:
     return re.sub(r"-{2,}", "-", s)
 
 
+VER_TOKEN_RE = re.compile(r"[-_ ]v(\d+(?:[._]\d+){0,3})\b", re.I)
+
+
 def version_of_zip(name: str) -> Optional[str]:
-    m = VER_RE.search(re.sub(r"\.zip$", "", name, flags=re.I))
+    base = re.sub(r"\.zip$", "", name, flags=re.I)
+    m = VER_TOKEN_RE.search(base)
     return m.group(1).replace("_", ".") if m else None
 
 

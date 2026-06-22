@@ -46,7 +46,8 @@ FIELDS = (
 )
 
 
-def call_ollama(host: str, model: str, prompt: str) -> str:
+def call_ollama(host: str, model: str, prompt: str, num_ctx: int,
+                timeout: int) -> str:
     payload = {
         "model": model,
         "messages": [
@@ -55,21 +56,27 @@ def call_ollama(host: str, model: str, prompt: str) -> str:
         ],
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0.1, "num_ctx": 65536},
+        "think": False,  # disable reasoning channel: faster, avoids 500s on gpt-oss
+        "options": {
+            "temperature": 0.1,
+            "num_ctx": num_ctx,
+            "num_predict": 1024,
+        },
     }
     req = urllib.request.Request(
         host.rstrip("/") + "/api/chat",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=900) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data.get("message", {}).get("content", "{}")
 
 
 def main() -> int:
+    import time
     ap = argparse.ArgumentParser(
-        description="Stage 4 (optional): fill fuzzy schema fields per cluster "
+        description="Stage 4 (optional): fill fuzzy schema fields per project "
                     "using a local Ollama model. Deterministic facts are merged "
                     "over model output.")
     ap.add_argument("--store", default="output/store",
@@ -81,7 +88,16 @@ def main() -> int:
     ap.add_argument("--host", default="http://localhost:11434",
                     help="Ollama host (default: http://localhost:11434).")
     ap.add_argument("--out", default="output/reconstructed_projects.json",
-                    help="Final JSON path (default: output/reconstructed_projects.json).")
+                    help="Final JSON path.")
+    ap.add_argument("--num-ctx", type=int, default=32768,
+                    help="Model context window (default: 32768; lower if OOM/500).")
+    ap.add_argument("--timeout", type=int, default=300,
+                    help="Per-call timeout seconds (default: 300).")
+    ap.add_argument("--max-chars", type=int, default=24000,
+                    help="Truncate each bundle to this many chars before sending.")
+    ap.add_argument("--min-versions", type=int, default=1,
+                    help="Only summarize clusters with >= this many version zips "
+                         "(default: 1; use 0 for all).")
     args = ap.parse_args()
 
     cpath = os.path.join(args.store, "clusters.json")
@@ -92,6 +108,11 @@ def main() -> int:
     except OSError as e:
         ulog.err("READ", cpath, error=e)
         return 1
+
+    clusters = [c for c in clusters
+                if c.get("n_versions", 0) >= args.min_versions
+                or c.get("n_conversations", 0) >= 2]
+    ulog.log("FILTER", cpath, status=f"{len(clusters)} projects to summarize")
 
     projects = []
     for c in clusters:
@@ -107,18 +128,27 @@ def main() -> int:
         except OSError as e:
             ulog.err("READ bundle", bpath, error=e)
             continue
+        if len(bundle) > args.max_chars:
+            bundle = bundle[:args.max_chars] + "\n[...truncated...]"
         prompt = (
             f"Fields to emit (JSON keys): {FIELDS}\n\n"
             f"Transcripts and facts for project slug '{slug}':\n\n{bundle}"
         )
-        ulog.log("LLM call", slug, status=f"model={args.model}")
-        try:
-            raw = call_ollama(args.host, args.model, prompt)
-            fuzzy = json.loads(raw)
-            ulog.log("LLM done", slug, status="parsed JSON")
-        except Exception as e:
-            ulog.err("LLM call", slug, error=e)
-            fuzzy = {}
+        ulog.log("LLM call", slug, status=f"model={args.model} ctx={args.num_ctx}")
+        t0 = time.time()
+        fuzzy = {}
+        for attempt, ctx in enumerate((args.num_ctx, args.num_ctx // 2), start=1):
+            try:
+                raw = call_ollama(args.host, args.model, prompt, ctx, args.timeout)
+                fuzzy = json.loads(raw)
+                ulog.log("LLM done", slug,
+                         status=f"{time.time()-t0:.0f}s (ctx={ctx})")
+                break
+            except Exception as e:
+                ulog.err("LLM call", slug,
+                         error=f"attempt {attempt} ctx={ctx}: {e}")
+                if attempt == 1:
+                    ulog.log("LLM retry", slug, status=f"halving ctx -> {ctx//2}")
 
         projects.append({
             "project_name": fuzzy.get("project_name") or slug,

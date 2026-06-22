@@ -31,8 +31,11 @@ def main() -> int:
                     help="Store dir with clusters.json + transcripts/ (default: output/store).")
     ap.add_argument("--out", default="output/bundles",
                     help="Bundle output directory (default: output/bundles).")
-    ap.add_argument("--char-budget", type=int, default=48000,
-                    help="Max chars per bundle (~4 chars/token; default: 48000).")
+    ap.add_argument("--char-budget", type=int, default=24000,
+                    help="Max chars per bundle (~4 chars/token; default: 24000).")
+    ap.add_argument("--min-versions", type=int, default=1,
+                    help="Only bundle clusters with >= this many version zips "
+                         "(default: 1 = real projects; use 0 for all clusters).")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -47,6 +50,15 @@ def main() -> int:
     except OSError as e:
         ulog.err("READ", clusters_path, error=e)
         return 1
+
+    # Keep "projects": clusters with version zips, OR multi-conversation clusters.
+    kept = [c for c in clusters
+            if c.get("n_versions", 0) >= args.min_versions
+            or c.get("n_conversations", 0) >= 2]
+    ulog.log("FILTER", clusters_path,
+             status=f"{len(kept)} projects kept / {len(clusters)} clusters "
+                    f"(min_versions={args.min_versions})")
+    clusters = kept
     try:
         with open(index_path, "r", encoding="utf-8") as f:
             index = json.load(f)

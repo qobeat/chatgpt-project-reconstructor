@@ -22,30 +22,38 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 import ulog
 
+_SENTINEL = object()
+
 try:
     import ijson  # type: ignore
     _HAVE_IJSON = True
 except Exception:  # pragma: no cover
     _HAVE_IJSON = False
 
-CONV_ENTRY_CANDIDATES = ("conversations.json",)
+import re as _re
 
-# Known small metadata sidecars that are NOT the conversations file.
+# Matches conversations.json and sharded conversations-000.json ... -NNN.json
+_CONV_RE = _re.compile(r"^conversations(-\d+)?\.json$", _re.I)
+
+# Known metadata sidecars that are NOT conversation content.
 _SIDECAR_HINTS = (
     "asset", "file_names", "file-names", "feedback", "message_feedback",
     "shared_conversations", "model_comparisons", "user", "chat_metadata",
+    "group_chats", "library_files", "export_manifest", "user_settings",
+    "codex",
 )
 
 
-def find_conversations_entry(zf: zipfile.ZipFile) -> str:
+def find_conversations_entries(zf: zipfile.ZipFile) -> List[str]:
     """
-    Locate the conversations file robustly:
-      1. any entry whose basename == 'conversations.json' (handles subfolders);
-         if several, the largest.
-      2. else the largest *.json that is not a known metadata sidecar.
-      3. else the largest *.json.
+    Return ALL conversation entries, sorted. Modern exports shard conversations
+    across conversations-000.json ... conversations-NNN.json; older ones use a
+    single conversations.json. Falls back to the largest non-sidecar JSON.
     """
     names = zf.namelist()
+
+    def base(n: str) -> str:
+        return n.rsplit("/", 1)[-1].lower()
 
     def size(n: str) -> int:
         try:
@@ -53,24 +61,25 @@ def find_conversations_entry(zf: zipfile.ZipFile) -> str:
         except KeyError:
             return 0
 
-    exact = [n for n in names if n.rsplit("/", 1)[-1].lower() == "conversations.json"]
-    if exact:
-        return max(exact, key=size)
+    shards = sorted(n for n in names if _CONV_RE.match(base(n)))
+    if shards:
+        return shards
 
+    # Fallback: largest non-sidecar JSON (single-file exports / odd layouts)
     jsons = [n for n in names if n.lower().endswith(".json")]
-    non_sidecar = [
-        n for n in jsons
-        if not any(h in n.rsplit("/", 1)[-1].lower() for h in _SIDECAR_HINTS)
-    ]
+    non_sidecar = [n for n in jsons if not any(h in base(n) for h in _SIDECAR_HINTS)]
     pool = non_sidecar or jsons
     if pool:
-        chosen = max(pool, key=size)
-        return chosen
+        return [max(pool, key=size)]
 
     raise FileNotFoundError(
-        "No .json conversations file found in archive. Entries: "
-        + ", ".join(names[:40])
+        "No conversations JSON found in archive. Entries: " + ", ".join(names[:40])
     )
+
+
+def find_conversations_entry(zf: zipfile.ZipFile) -> str:
+    """Back-compat: first/best single entry."""
+    return find_conversations_entries(zf)[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -99,76 +108,82 @@ def _looks_like_conversation(v) -> bool:
 # --------------------------------------------------------------------------- #
 # Streaming iterator
 # --------------------------------------------------------------------------- #
+def _iter_one_entry(zf: "zipfile.ZipFile", entry: str) -> Iterator[dict]:
+    """Yield conversation dicts from a single entry, auto-detecting root shape."""
+    try:
+        esize = zf.getinfo(entry).file_size
+    except KeyError:
+        esize = -1
+    ulog.log("READ entry", entry,
+             status=f"{esize:,} bytes (backend={'ijson' if _HAVE_IJSON else 'stdlib'})")
+
+    if _HAVE_IJSON:
+        strategies = [
+            ("array", lambda: ijson.items(zf.open(entry, "r"), "item")),
+            ("conversations[]",
+             lambda: ijson.items(zf.open(entry, "r"), "conversations.item")),
+            ("object-by-id",
+             lambda: (v for _, v in ijson.kvitems(zf.open(entry, "r"), ""))),
+        ]
+        for name, make in strategies:
+            gen = make()
+            first = next(gen, _SENTINEL)
+            if first is _SENTINEL:
+                ulog.dbg("PROBE", entry, status=f"strategy '{name}' yielded 0")
+                continue
+            if not _looks_like_conversation(first):
+                ulog.dbg("PROBE", entry, status=f"strategy '{name}' wrong content")
+                continue
+            ulog.dbg("PARSE", entry, status=f"root shape = {name}")
+            yield first
+            for item in gen:
+                if _looks_like_conversation(item):
+                    yield item
+            return
+        ulog.err("PARSE", entry, error="no strategy matched; skipping shard")
+        return
+
+    # ---- stdlib fallback (no ijson) ----
+    import sys
+    if esize > 200_000_000:
+        sys.stderr.write(
+            f"[warn] ijson not installed and {entry} is {esize/1e6:.0f} MB; "
+            "loading fully into RAM. Install ijson for streaming.\n"
+        )
+    with zf.open(entry, "r") as fh:
+        data = json.load(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+    if isinstance(data, list):
+        convs = data
+    elif isinstance(data, dict) and isinstance(data.get("conversations"), list):
+        convs = data["conversations"]
+    elif isinstance(data, dict):
+        convs = list(data.values())
+    else:
+        convs = []
+    for c in convs:
+        if _looks_like_conversation(c):
+            yield c
+
+
 def iter_conversations(zip_path: str) -> Iterator[dict]:
     """
-    Yield conversation dicts one at a time, bounded memory, auto-detecting the
-    root shape. Tries strategies in order and commits to the first that yields
-    a conversation-looking object:
-      1. top-level array            -> ijson prefix 'item'
-      2. {"conversations":[...]}    -> ijson prefix 'conversations.item'
-      3. object keyed by id {id:{}} -> ijson kvitems at '' (yield values)
-    Falls back to stdlib json.load if ijson is unavailable.
+    Yield conversation dicts from ALL conversation shards in the archive
+    (conversations.json and/or conversations-000.json ... -NNN.json), one at a
+    time with bounded memory. Auto-detects each shard's root shape.
     """
     with zipfile.ZipFile(zip_path, "r") as zf:
-        entry = find_conversations_entry(zf)
-        try:
-            esize = zf.getinfo(entry).file_size
-        except KeyError:
-            esize = -1
-        ulog.log("READ entry", entry, status=f"{esize:,} bytes (backend={'ijson' if _HAVE_IJSON else 'stdlib'})")
-
-        if _HAVE_IJSON:
-            strategies = [
-                ("array", lambda: ijson.items(zf.open(entry, "r"), "item")),
-                ("conversations[]",
-                 lambda: ijson.items(zf.open(entry, "r"), "conversations.item")),
-                ("object-by-id",
-                 lambda: (v for _, v in ijson.kvitems(zf.open(entry, "r"), ""))),
-            ]
-            for name, make in strategies:
-                gen = make()
-                first = next(gen, _SENTINEL)
-                if first is _SENTINEL:
-                    ulog.dbg("PROBE", entry, status=f"strategy '{name}' yielded 0")
-                    continue
-                if not _looks_like_conversation(first):
-                    ulog.dbg("PROBE", entry, status=f"strategy '{name}' wrong content")
-                    continue
-                ulog.log("PARSE", entry, status=f"root shape = {name}")
-                yield first
-                for item in gen:
-                    if _looks_like_conversation(item):
-                        yield item
-                return
+        entries = find_conversations_entries(zf)
+        ulog.log("SHARDS", zip_path, status=f"{len(entries)} conversation file(s)")
+        total = 0
+        for entry in entries:
+            for conv in _iter_one_entry(zf, entry):
+                total += 1
+                yield conv
+        if total == 0:
             raise RuntimeError(
-                f"No conversations parsed from '{entry}'. Run "
+                "No conversations parsed from any shard. Run "
                 "scripts/diagnose.py to inspect the export structure."
             )
-
-        # ---- stdlib fallback (no ijson) ----
-        import sys
-        size = zf.getinfo(entry).file_size
-        if size > 200_000_000:
-            sys.stderr.write(
-                f"[warn] ijson not installed and {entry} is {size/1e6:.0f} MB; "
-                "loading fully into RAM. Install ijson for streaming.\n"
-            )
-        with zf.open(entry, "r") as fh:
-            data = json.load(io.TextIOWrapper(fh, encoding="utf-8-sig"))
-        if isinstance(data, list):
-            convs = data
-        elif isinstance(data, dict) and isinstance(data.get("conversations"), list):
-            convs = data["conversations"]
-        elif isinstance(data, dict):
-            convs = list(data.values())
-        else:
-            convs = []
-        for c in convs:
-            if _looks_like_conversation(c):
-                yield c
-
-
-_SENTINEL = object()
 
 
 # --------------------------------------------------------------------------- #
