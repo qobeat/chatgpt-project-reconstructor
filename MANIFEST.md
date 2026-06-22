@@ -22,7 +22,7 @@ to `schema/project_history_schema.json`.
 - If a `.zip` is missing on disk, STOP and report it. Do not fabricate data.
 
 ## PLAN (actions → success condition)
-1. `python run.py --zip "<zip1>" [--zip "<zip2>" ...]`
+1. `./run.sh --zip "<zip1>" [--zip "<zip2>" ...]`  (or: `source .venv/bin/activate && python run.py ...`)
    - SUCCESS: `output/store/index.json`, `cards.jsonl`, `clusters.json`, and
      `output/bundles/*.md` + `bundles/INDEX.json` exist; stderr shows
      `added/updated/skipped` and a non-zero cluster count.
@@ -30,7 +30,7 @@ to `schema/project_history_schema.json`.
    (slugs, n_conversations, n_versions, date span). This is the cheap checkpoint.
 3. Stage 4 — LLM summary (default to Ollama if `--model` reachable, else emit the
    Cursor instructions):
-   - Ollama: `python scripts/summarize_ollama.py --model gpt-oss:20b`
+   - Ollama: `./ollama.sh --model gpt-oss:20b`
    - Cursor: for each `output/bundles/<slug>.md`, attach it +
      `schema/project_history_schema.json`, run `prompts/cursor_extraction_prompt.md`,
      append the emitted object to `output/reconstructed_projects.json`.

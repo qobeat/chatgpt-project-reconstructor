@@ -1,0 +1,6 @@
+scripts/lib/__pycache__/
+**/__pycache__/
+.venv
+.vscode
+output/
+*.log

@@ -16,8 +16,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections import defaultdict
 from typing import Dict, List
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+import ulog  # noqa: E402
 
 
 class UnionFind:
@@ -56,18 +60,27 @@ def slug_fallback(card: dict) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--store", default="output/store")
-    ap.add_argument("--min-slug-votes", type=int, default=3)
+    ap = argparse.ArgumentParser(
+        description="Stage 2: cluster conversation cards into projects "
+                    "(union-find over zip-basename slugs).")
+    ap.add_argument("--store", default="output/store",
+                    help="Store directory containing cards.jsonl (default: output/store).")
+    ap.add_argument("--min-slug-votes", type=int, default=3,
+                    help="Min vote weight for a zip-derived slug to be primary (default: 3).")
     args = ap.parse_args()
 
     cards_path = os.path.join(args.store, "cards.jsonl")
     cards: List[dict] = []
-    with open(cards_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                cards.append(json.loads(line))
+    try:
+        with open(cards_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    cards.append(json.loads(line))
+        ulog.log("READ", cards_path, status=f"{len(cards)} cards")
+    except OSError as e:
+        ulog.err("READ", cards_path, error=e)
+        return 1
 
     uf = UnionFind()
     # link any two cards that share any strong (zip) slug
@@ -129,9 +142,13 @@ def main() -> int:
 
     clusters.sort(key=lambda c: (-c["n_conversations"], c["slug"]))
     out = os.path.join(args.store, "clusters.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(clusters, f, ensure_ascii=False, indent=2)
-    print(f"[done] {len(clusters)} clusters -> {out}")
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(clusters, f, ensure_ascii=False, indent=2)
+        ulog.log("WRITE", out, status=f"{len(clusters)} clusters")
+    except OSError as e:
+        ulog.err("WRITE", out, error=e)
+        return 1
     for c in clusters[:15]:
         print(f"  {c['slug']:<28} convs={c['n_conversations']:<3} "
               f"versions={c['n_versions']:<3} {c['start_date']}..{c['end_date']}")

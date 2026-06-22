@@ -65,16 +65,29 @@ exec python "$SCRIPT_DIR/scripts/summarize_ollama.py" "$@"
 OLL
 chmod +x ollama.sh
 
+# ── write diagnose.sh wrapper ──────────────────────────────────────────────
+cat > diagnose.sh << 'DIAG'
+#!/usr/bin/env bash
+# diagnose.sh — inspect an export's structure (read-only)
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/.venv/bin/activate"
+exec python "$SCRIPT_DIR/scripts/diagnose.py" "$@"
+DIAG
+chmod +x diagnose.sh
+
 echo ""
-echo "[setup] Done. Two ways to run:"
+echo "[setup] Done. Wrappers written: run.sh, ollama.sh, diagnose.sh"
 echo ""
-echo "  OPTION A — venv wrapper (recommended):"
-echo "    bash run.sh --zip \"/mnt/c/Users/kirae/Downloads/ChatGpt/<export>.zip\""
+echo "  Run the pipeline (deterministic Stages 1-3):"
+echo "    ./run.sh --zip \"/mnt/c/Users/kirae/Downloads/ChatGpt/<export>.zip\""
+echo "    ./run.sh --zip \"<export>.zip\" --verbose      # per-file logging"
 echo ""
-echo "  OPTION B — manual activate:"
-echo "    source .venv/bin/activate"
-echo "    python run.py --zip \"/mnt/c/.../<export>.zip\""
-echo "    deactivate"
+echo "  Stage 4 — LLM summary (offline):"
+echo "    ./ollama.sh --model gpt-oss:20b"
 echo ""
-echo "  Stage 4 (Ollama):"
-echo "    bash ollama.sh --model gpt-oss:20b"
+echo "  Inspect an export if parsing yields 0 (read-only):"
+echo "    ./diagnose.sh --zip \"<export>.zip\""
+echo ""
+echo "  Manual venv (alternative to wrappers):"
+echo "    source .venv/bin/activate && python run.py --zip \"<export>.zip\""

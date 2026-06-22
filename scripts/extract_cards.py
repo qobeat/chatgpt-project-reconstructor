@@ -25,6 +25,7 @@ import sys
 from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+import ulog  # noqa: E402
 from chatgpt_parse import (  # noqa: E402
     iter_conversations,
     active_path_nodes,
@@ -143,59 +144,102 @@ def load_index(path: str) -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--zip", action="append", required=True, dest="zips")
-    ap.add_argument("--out", default="output/store")
+    ap = argparse.ArgumentParser(
+        description="Stage 1: stream ChatGPT export .zip(s) into reduced "
+                    "transcripts + per-conversation cards + incremental store.")
+    ap.add_argument("--zip", action="append", required=True, dest="zips",
+                    metavar="PATH", help="Export .zip (repeatable).")
+    ap.add_argument("--out", default="output/store",
+                    help="Store directory (default: output/store).")
+    ap.add_argument("--verbose", action="store_true",
+                    help="Log every transcript write (default: progress every 500).")
+    ap.add_argument("--progress-every", type=int, default=500,
+                    help="Progress cadence when not --verbose (default: 500).")
     args = ap.parse_args()
+    ulog.set_verbose(args.verbose)
 
     tdir = os.path.join(args.out, "transcripts")
     os.makedirs(tdir, exist_ok=True)
+    ulog.log("MKDIR", tdir, status="ready")
     index_path = os.path.join(args.out, "index.json")
     cards_path = os.path.join(args.out, "cards.jsonl")
-    index = load_index(index_path)
+
+    try:
+        index = load_index(index_path)
+        ulog.log("READ", index_path, status=f"{len(index)} existing records")
+    except Exception as e:
+        ulog.err("READ", index_path, error=e)
+        index = {}
 
     added, updated, skipped, seen = 0, 0, 0, 0
     for zp in args.zips:
         if not os.path.exists(zp):
-            sys.stderr.write(f"[skip] missing: {zp}\n")
+            ulog.err("READ zip", zp, error="file not found")
             continue
-        sys.stderr.write(f"[scan] {zp}\n")
-        for conv in iter_conversations(zp):
-            seen += 1
-            card = build_card(conv)
-            if not card:
-                continue
-            cid = card["id"]
-            prev = index.get(cid)
-            if prev and (prev.get("update_time") or 0) >= (card["update_time"] or 0):
-                skipped += 1
-                continue
-            # write transcript
-            with open(os.path.join(tdir, f"{cid}.txt"), "w", encoding="utf-8") as f:
-                f.write(card["transcript"])
-            meta = {k: v for k, v in card.items() if k != "transcript"}
-            meta["source_zip"] = os.path.basename(zp)
-            if prev:
-                updated += 1
-            else:
-                added += 1
-            index[cid] = meta
+        try:
+            zsize = os.path.getsize(zp)
+        except OSError:
+            zsize = -1
+        ulog.log("READ zip", zp, status=f"{zsize:,} bytes")
+        try:
+            for conv in iter_conversations(zp):
+                seen += 1
+                card = build_card(conv)
+                if not card:
+                    ulog.dbg("SKIP conv", status="no id")
+                    continue
+                cid = card["id"]
+                prev = index.get(cid)
+                if prev and (prev.get("update_time") or 0) >= (card["update_time"] or 0):
+                    skipped += 1
+                    ulog.dbg("SKIP conv", cid, status="unchanged")
+                    continue
+                tpath = os.path.join(tdir, f"{cid}.txt")
+                try:
+                    with open(tpath, "w", encoding="utf-8") as f:
+                        f.write(card["transcript"])
+                    ulog.dbg("WRITE transcript", tpath,
+                             status=f"{len(card['transcript'])} chars")
+                except OSError as e:
+                    ulog.err("WRITE transcript", tpath, error=e)
+                    continue
+                meta = {k: v for k, v in card.items() if k != "transcript"}
+                meta["source_zip"] = os.path.basename(zp)
+                index[cid] = meta
+                if prev:
+                    updated += 1
+                else:
+                    added += 1
+                if not args.verbose and seen % args.progress_every == 0:
+                    ulog.log("PROGRESS", zp,
+                             status=f"seen={seen} added={added} "
+                                    f"updated={updated} skipped={skipped}")
+        except Exception as e:
+            ulog.err("PARSE zip", zp, error=e)
+            raise
 
-    with open(index_path, "w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2)
-    with open(cards_path, "w", encoding="utf-8") as f:
-        for cid, meta in index.items():
-            f.write(json.dumps(meta, ensure_ascii=False) + "\n")
+    try:
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(index, f, ensure_ascii=False, indent=2)
+        ulog.log("WRITE", index_path, status=f"{len(index)} records")
+    except OSError as e:
+        ulog.err("WRITE", index_path, error=e)
+    try:
+        with open(cards_path, "w", encoding="utf-8") as f:
+            for cid, meta in index.items():
+                f.write(json.dumps(meta, ensure_ascii=False) + "\n")
+        ulog.log("WRITE", cards_path, status=f"{len(index)} cards")
+    except OSError as e:
+        ulog.err("WRITE", cards_path, error=e)
 
-    sys.stderr.write(
-        f"[done] seen={seen} added={added} updated={updated} skipped={skipped} "
-        f"total={len(index)}\n  index: {index_path}\n  cards: {cards_path}\n"
-    )
+    ulog.log("DONE", args.out,
+             status=f"seen={seen} added={added} updated={updated} "
+                    f"skipped={skipped} total={len(index)}")
     if seen == 0:
         sys.stderr.write(
             "\n[!] 0 conversations parsed from the archive(s).\n"
-            "    The export root shape may be unrecognized. Inspect it with:\n"
-            f"      python3 scripts/diagnose.py --zip <your.zip>\n"
+            "    Inspect the export structure (read-only):\n"
+            "      python3 scripts/diagnose.py --zip <your.zip>\n"
         )
     return 0
 

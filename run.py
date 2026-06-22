@@ -27,19 +27,32 @@ def run(mod: str, *cli: str):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--zip", action="append", required=True, dest="zips")
-    ap.add_argument("--store", default="output/store")
-    ap.add_argument("--bundles", default="output/bundles")
-    ap.add_argument("--min-slug-votes", type=int, default=3)
-    ap.add_argument("--char-budget", type=int, default=48000)
+    ap = argparse.ArgumentParser(
+        description="Orchestrate deterministic Stages 1-3 (extract -> cluster "
+                    "-> bundle). Stage 4 (LLM) is run separately via Cursor or "
+                    "scripts/summarize_ollama.py.")
+    ap.add_argument("--zip", action="append", required=True, dest="zips",
+                    metavar="PATH", help="Export .zip (repeatable).")
+    ap.add_argument("--store", default="output/store",
+                    help="Store directory (default: output/store).")
+    ap.add_argument("--bundles", default="output/bundles",
+                    help="Bundle directory (default: output/bundles).")
+    ap.add_argument("--min-slug-votes", type=int, default=3,
+                    help="Clustering slug-vote threshold (default: 3).")
+    ap.add_argument("--char-budget", type=int, default=48000,
+                    help="Max chars per LLM bundle (default: 48000).")
+    ap.add_argument("--verbose", action="store_true",
+                    help="Verbose per-file read/write logging.")
     args = ap.parse_args()
 
     zip_args = []
     for z in args.zips:
         zip_args += ["--zip", z]
 
-    run("extract_cards.py", *zip_args, "--out", args.store)
+    extract_args = [*zip_args, "--out", args.store]
+    if args.verbose:
+        extract_args.append("--verbose")
+    run("extract_cards.py", *extract_args)
     run("cluster_projects.py", "--store", args.store,
         "--min-slug-votes", str(args.min_slug_votes))
     run("build_bundles.py", "--store", args.store, "--out", args.bundles,

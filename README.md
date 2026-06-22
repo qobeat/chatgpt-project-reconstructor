@@ -33,22 +33,30 @@ to the next version. Output is flat JSON ready for agentic/Cursor workflows.
 ## 🚀 Fast start
 ```bash
 cd chatgpt-project-reconstructor
-pip install -r requirements.txt          # ijson (recommended for GB zips)
 
-# Deterministic stages (no LLM): point at your NEWEST export (snapshots are cumulative)
-python run.py --zip "/mnt/c/Users/kirae/Downloads/ChatGpt/<latest>.zip"
+# 1. One-time setup: creates .venv, installs ijson, writes run.sh + ollama.sh
+bash setup.sh
 
-# Inspect deterministic results before spending any tokens:
-cat output/store/clusters.json | less
+# 2. Deterministic stages (no LLM). Point at your NEWEST export (snapshots are cumulative).
+./run.sh --zip "/mnt/c/Users/kirae/Downloads/ChatGpt/<latest>.zip"
+#   add --verbose for per-file read/write logging
+
+# 3. Inspect deterministic results BEFORE spending any tokens:
+cat output/store/clusters.json
 ls output/bundles/
 
-# Stage 4 — choose ONE:
-#  A) Cursor: attach schema/project_history_schema.json + output/bundles/<slug>.md,
-#     paste prompts/cursor_extraction_prompt.md (run once per bundle).
-#  B) Local Ollama (offline):
-python scripts/summarize_ollama.py --model gpt-oss:20b
+# 4. Stage 4 — LLM summary, choose ONE:
+#    A) Local Ollama (offline):
+./ollama.sh --model gpt-oss:20b
+#    B) Cursor: attach schema/project_history_schema.json + output/bundles/<slug>.md,
+#       paste prompts/cursor_extraction_prompt.md (run once per bundle).
 ```
 Result: `output/reconstructed_projects.json`.
+
+`setup.sh` finds Python 3.10+, builds `.venv`, installs `ijson` (graceful
+stdlib fallback if the build fails), and generates the `run.sh` / `ollama.sh`
+wrappers that invoke the venv's Python — so you never hit the Ubuntu 24
+`python`-not-found or `externally-managed-environment` walls.
 
 > **Note:** use the `run.sh` / `ollama.sh` wrappers (they use the venv's Python).
 > Calling bare `python` may fail on Ubuntu 24 (`python` isn't aliased to
@@ -74,7 +82,7 @@ ADOS catalog. `source_conversation_ids` lets you jump back to raw transcripts in
 `output/store/transcripts/`.
 
 ## 🔁 How to update (future exports)
-Run `python run.py --zip "<new-export>.zip"` again. The store keyed by
+Run `./run.sh --zip "<new-export>.zip"` again. The store keyed by
 conversation id updates only new/changed chats (newer `update_time` wins), then
 re-cluster/re-summarize. No need to reprocess history.
 

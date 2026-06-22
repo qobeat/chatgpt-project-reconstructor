@@ -20,6 +20,8 @@ import re
 import zipfile
 from typing import Dict, Iterator, List, Optional, Tuple
 
+import ulog
+
 try:
     import ijson  # type: ignore
     _HAVE_IJSON = True
@@ -28,24 +30,52 @@ except Exception:  # pragma: no cover
 
 CONV_ENTRY_CANDIDATES = ("conversations.json",)
 
+# Known small metadata sidecars that are NOT the conversations file.
+_SIDECAR_HINTS = (
+    "asset", "file_names", "file-names", "feedback", "message_feedback",
+    "shared_conversations", "model_comparisons", "user", "chat_metadata",
+)
 
-# --------------------------------------------------------------------------- #
-# ZIP entry discovery
-# --------------------------------------------------------------------------- #
+
 def find_conversations_entry(zf: zipfile.ZipFile) -> str:
+    """
+    Locate the conversations file robustly:
+      1. any entry whose basename == 'conversations.json' (handles subfolders);
+         if several, the largest.
+      2. else the largest *.json that is not a known metadata sidecar.
+      3. else the largest *.json.
+    """
     names = zf.namelist()
-    for cand in CONV_ENTRY_CANDIDATES:
-        if cand in names:
-            return cand
-    # fallback: any *.json whose name contains 'conversation'
-    for n in names:
-        if n.lower().endswith(".json") and "conversation" in n.lower():
-            return n
+
+    def size(n: str) -> int:
+        try:
+            return zf.getinfo(n).file_size
+        except KeyError:
+            return 0
+
+    exact = [n for n in names if n.rsplit("/", 1)[-1].lower() == "conversations.json"]
+    if exact:
+        return max(exact, key=size)
+
+    jsons = [n for n in names if n.lower().endswith(".json")]
+    non_sidecar = [
+        n for n in jsons
+        if not any(h in n.rsplit("/", 1)[-1].lower() for h in _SIDECAR_HINTS)
+    ]
+    pool = non_sidecar or jsons
+    if pool:
+        chosen = max(pool, key=size)
+        return chosen
+
     raise FileNotFoundError(
-        "conversations.json not found in archive. Entries: " + ", ".join(names[:20])
+        "No .json conversations file found in archive. Entries: "
+        + ", ".join(names[:40])
     )
 
 
+# --------------------------------------------------------------------------- #
+# ZIP entry discovery (see find_conversations_entry above)
+# --------------------------------------------------------------------------- #
 def _peek_root_kind(zf: zipfile.ZipFile, entry: str) -> str:
     """Return 'array' or 'object' by reading the first non-ws byte (BOM-safe)."""
     with zf.open(entry, "r") as fh:
@@ -81,6 +111,11 @@ def iter_conversations(zip_path: str) -> Iterator[dict]:
     """
     with zipfile.ZipFile(zip_path, "r") as zf:
         entry = find_conversations_entry(zf)
+        try:
+            esize = zf.getinfo(entry).file_size
+        except KeyError:
+            esize = -1
+        ulog.log("READ entry", entry, status=f"{esize:,} bytes (backend={'ijson' if _HAVE_IJSON else 'stdlib'})")
 
         if _HAVE_IJSON:
             strategies = [
@@ -94,10 +129,12 @@ def iter_conversations(zip_path: str) -> Iterator[dict]:
                 gen = make()
                 first = next(gen, _SENTINEL)
                 if first is _SENTINEL:
+                    ulog.dbg("PROBE", entry, status=f"strategy '{name}' yielded 0")
                     continue
                 if not _looks_like_conversation(first):
-                    # strategy matched structurally but content is wrong; skip
+                    ulog.dbg("PROBE", entry, status=f"strategy '{name}' wrong content")
                     continue
+                ulog.log("PARSE", entry, status=f"root shape = {name}")
                 yield first
                 for item in gen:
                     if _looks_like_conversation(item):

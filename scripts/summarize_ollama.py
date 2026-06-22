@@ -26,6 +26,9 @@ import os
 import sys
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+import ulog  # noqa: E402
+
 SYS_PROMPT = (
     "You reconstruct software project history from reduced chat transcripts. "
     "Output ONLY a single JSON object for ONE project, matching the provided "
@@ -65,35 +68,56 @@ def call_ollama(host: str, model: str, prompt: str) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--store", default="output/store")
-    ap.add_argument("--bundles", default="output/bundles")
-    ap.add_argument("--model", default="gpt-oss:20b")
-    ap.add_argument("--host", default="http://localhost:11434")
-    ap.add_argument("--out", default="output/reconstructed_projects.json")
+    ap = argparse.ArgumentParser(
+        description="Stage 4 (optional): fill fuzzy schema fields per cluster "
+                    "using a local Ollama model. Deterministic facts are merged "
+                    "over model output.")
+    ap.add_argument("--store", default="output/store",
+                    help="Store dir with clusters.json (default: output/store).")
+    ap.add_argument("--bundles", default="output/bundles",
+                    help="Bundle dir with <slug>.md files (default: output/bundles).")
+    ap.add_argument("--model", default="gpt-oss:20b",
+                    help="Ollama model tag (default: gpt-oss:20b).")
+    ap.add_argument("--host", default="http://localhost:11434",
+                    help="Ollama host (default: http://localhost:11434).")
+    ap.add_argument("--out", default="output/reconstructed_projects.json",
+                    help="Final JSON path (default: output/reconstructed_projects.json).")
     args = ap.parse_args()
 
-    with open(os.path.join(args.store, "clusters.json"), "r", encoding="utf-8") as f:
-        clusters = json.load(f)
+    cpath = os.path.join(args.store, "clusters.json")
+    try:
+        with open(cpath, "r", encoding="utf-8") as f:
+            clusters = json.load(f)
+        ulog.log("READ", cpath, status=f"{len(clusters)} clusters")
+    except OSError as e:
+        ulog.err("READ", cpath, error=e)
+        return 1
 
     projects = []
     for c in clusters:
         slug = c["slug"]
         bpath = os.path.join(args.bundles, f"{slug}.md")
         if not os.path.exists(bpath):
+            ulog.dbg("READ bundle", bpath, status="missing, skipped")
             continue
-        with open(bpath, "r", encoding="utf-8") as f:
-            bundle = f.read()
+        try:
+            with open(bpath, "r", encoding="utf-8") as f:
+                bundle = f.read()
+            ulog.log("READ bundle", bpath, status=f"{len(bundle):,} chars")
+        except OSError as e:
+            ulog.err("READ bundle", bpath, error=e)
+            continue
         prompt = (
             f"Fields to emit (JSON keys): {FIELDS}\n\n"
             f"Transcripts and facts for project slug '{slug}':\n\n{bundle}"
         )
-        sys.stderr.write(f"[llm] {slug} ...\n")
+        ulog.log("LLM call", slug, status=f"model={args.model}")
         try:
             raw = call_ollama(args.host, args.model, prompt)
             fuzzy = json.loads(raw)
+            ulog.log("LLM done", slug, status="parsed JSON")
         except Exception as e:
-            sys.stderr.write(f"[warn] {slug}: {e}\n")
+            ulog.err("LLM call", slug, error=e)
             fuzzy = {}
 
         projects.append({
@@ -121,9 +145,14 @@ def main() -> int:
         "n_projects": len(projects),
         "projects": projects,
     }
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"[done] {len(projects)} projects -> {args.out}")
+    try:
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        ulog.log("WRITE", args.out, status=f"{len(projects)} projects")
+    except OSError as e:
+        ulog.err("WRITE", args.out, error=e)
+        return 1
+    ulog.log("DONE", args.out, status=f"{len(projects)} projects")
     return 0
 
 

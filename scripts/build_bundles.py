@@ -17,23 +17,43 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from typing import List
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+import ulog  # noqa: E402
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--store", default="output/store")
-    ap.add_argument("--out", default="output/bundles")
-    ap.add_argument("--char-budget", type=int, default=48000)  # ~12k tokens
+    ap = argparse.ArgumentParser(
+        description="Stage 3: build one token-capped LLM bundle per cluster.")
+    ap.add_argument("--store", default="output/store",
+                    help="Store dir with clusters.json + transcripts/ (default: output/store).")
+    ap.add_argument("--out", default="output/bundles",
+                    help="Bundle output directory (default: output/bundles).")
+    ap.add_argument("--char-budget", type=int, default=48000,
+                    help="Max chars per bundle (~4 chars/token; default: 48000).")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+    ulog.log("MKDIR", args.out, status="ready")
     tdir = os.path.join(args.store, "transcripts")
-    with open(os.path.join(args.store, "clusters.json"), "r", encoding="utf-8") as f:
-        clusters = json.load(f)
-    index = {}
-    with open(os.path.join(args.store, "index.json"), "r", encoding="utf-8") as f:
-        index = json.load(f)
+    clusters_path = os.path.join(args.store, "clusters.json")
+    index_path = os.path.join(args.store, "index.json")
+    try:
+        with open(clusters_path, "r", encoding="utf-8") as f:
+            clusters = json.load(f)
+        ulog.log("READ", clusters_path, status=f"{len(clusters)} clusters")
+    except OSError as e:
+        ulog.err("READ", clusters_path, error=e)
+        return 1
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+        ulog.log("READ", index_path, status=f"{len(index)} records")
+    except OSError as e:
+        ulog.err("READ", index_path, error=e)
+        index = {}
 
     bundle_index = []
     for c in clusters:
@@ -62,9 +82,14 @@ def main() -> int:
             meta = index.get(cid, {})
             tpath = os.path.join(tdir, f"{cid}.txt")
             if not os.path.exists(tpath):
+                ulog.dbg("READ transcript", tpath, status="missing, skipped")
                 continue
-            with open(tpath, "r", encoding="utf-8") as tf:
-                body = tf.read()
+            try:
+                with open(tpath, "r", encoding="utf-8") as tf:
+                    body = tf.read()
+            except OSError as e:
+                ulog.err("READ transcript", tpath, error=e)
+                continue
             header = f"\n\n--- conversation {cid} | {meta.get('create_date')} | {meta.get('title')} ---\n"
             chunk = header + body
             if len(chunk) > budget:
@@ -75,8 +100,14 @@ def main() -> int:
             budget -= len(chunk)
 
         out_path = os.path.join(args.out, f"{slug}.md")
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write("".join(parts))
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("".join(parts))
+            ulog.log("WRITE bundle", out_path,
+                     status=f"{sum(len(p) for p in parts):,} chars")
+        except OSError as e:
+            ulog.err("WRITE bundle", out_path, error=e)
+            continue
         bundle_index.append({
             "slug": slug,
             "bundle": os.path.relpath(out_path),
@@ -84,10 +115,16 @@ def main() -> int:
             "chars": sum(len(p) for p in parts),
         })
 
-    with open(os.path.join(args.out, "INDEX.json"), "w", encoding="utf-8") as f:
-        json.dump(bundle_index, f, ensure_ascii=False, indent=2)
+    idx_path = os.path.join(args.out, "INDEX.json")
+    try:
+        with open(idx_path, "w", encoding="utf-8") as f:
+            json.dump(bundle_index, f, ensure_ascii=False, indent=2)
+        ulog.log("WRITE", idx_path, status=f"{len(bundle_index)} bundles")
+    except OSError as e:
+        ulog.err("WRITE", idx_path, error=e)
     total = sum(b["chars"] for b in bundle_index)
-    print(f"[done] {len(bundle_index)} bundles -> {args.out}  (~{total//4} tokens total)")
+    ulog.log("DONE", args.out,
+             status=f"{len(bundle_index)} bundles, ~{total//4} tokens total")
     return 0
 
 

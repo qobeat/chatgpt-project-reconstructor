@@ -24,12 +24,12 @@ only writes fuzzy prose fields, schema-constrained.
 4. **LLM summary** (Stage 4, pick one):
    - Cursor Composer: attach `schema/project_history_schema.json` + a bundle,
      paste `prompts/cursor_extraction_prompt.md`. Run once per bundle.
-   - Local Ollama: `python scripts/summarize_ollama.py --model gpt-oss:20b`
+   - Local Ollama: `./ollama.sh --model gpt-oss:20b`
      (offline; deterministic facts are merged over the model output).
 
 ## One-shot (deterministic stages)
 ```bash
-python run.py \
+./run.sh \
   --zip /mnt/c/Users/kirae/Downloads/ChatGpt/<latest-export>.zip
 # then Stage 4 (Cursor or Ollama)
 ```

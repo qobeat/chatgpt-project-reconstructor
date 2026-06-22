@@ -22,7 +22,7 @@ to keep only the **canonical branch**, and extracts content across
 ## Run
 ```bash
 pip install ijson                              # recommended for GB-scale zips
-python scripts/extract_cards.py \
+python3 scripts/extract_cards.py \
     --zip /path/to/export.zip \
     --out output/store
 ```
