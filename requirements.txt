@@ -1,0 +1,3 @@
+# Only one dependency, and only for speed/memory on multi-GB archives.
+# Without it the pipeline still runs but loads conversations.json fully into RAM.
+ijson>=3.2

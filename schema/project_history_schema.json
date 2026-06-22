@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Reconstructed Project History",
+  "type": "object",
+  "required": ["projects"],
+  "properties": {
+    "generated_by": { "type": "string" },
+    "n_projects": { "type": "integer" },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["project_name", "slug", "goal", "source_conversation_ids"],
+        "properties": {
+          "project_name": { "type": "string" },
+          "slug": {
+            "type": "string",
+            "description": "Stable kebab-case key derived from version zip basenames."
+          },
+          "start_date": { "type": ["string", "null"], "description": "YYYY-MM-DD" },
+          "end_date": { "type": ["string", "null"], "description": "YYYY-MM-DD" },
+          "n_conversations": { "type": "integer" },
+          "n_versions": {
+            "type": "integer",
+            "description": "Count of distinct version zip files observed."
+          },
+          "version_zip_files": {
+            "type": "array",
+            "description": "DETERMINISTIC. Every project-version .zip seen in chats.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": { "type": "string" },
+                "slug": { "type": "string" },
+                "version": { "type": ["string", "null"] }
+              },
+              "required": ["filename"]
+            }
+          },
+          "file_artifacts": {
+            "type": "array",
+            "description": "DETERMINISTIC. Exact file names produced/modified (app.py, SKILL.md).",
+            "items": { "type": "string" }
+          },
+          "source_conversation_ids": {
+            "type": "array",
+            "description": "Provenance: conversation ids that fed this project.",
+            "items": { "type": "string" }
+          },
+          "goal": { "type": "string", "description": "One-sentence project goal." },
+          "objectives": { "type": "array", "items": { "type": "string" } },
+          "requirements": { "type": "array", "items": { "type": "string" } },
+          "requirements_evolution": {
+            "type": "array",
+            "description": "Ordered record of how requirements changed across chats.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": { "type": ["string", "null"] },
+                "change": { "type": "string" }
+              },
+              "required": ["change"]
+            }
+          },
+          "quickstart": { "type": "string", "description": "Fast-start commands/steps." },
+          "how_to_use": { "type": "string" },
+          "use_case": { "type": "string" },
+          "how_to_update": {
+            "type": "string",
+            "description": "How to move the project to its next version."
+          }
+        }
+      }
+    }
+  }
+}

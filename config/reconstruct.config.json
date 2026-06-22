@@ -1,0 +1,18 @@
+{
+  "_comment": "Optional knobs. The deterministic pipeline does not REQUIRE keyword filtering (it clusters on zip basenames), but these hints can be used to prioritise or label clusters downstream.",
+  "priority_keywords": [
+    "ados", "ados-arena", "opencode", "hermes", "specforge", "mcp", "fastmcp",
+    "ollama", "firecrawl", "repo-classify", "github-catalog", "cursor",
+    "skill", "schema", "benchmark", "trading", "plugin-kit"
+  ],
+  "min_slug_votes": 3,
+  "char_budget_per_bundle": 48000,
+  "ollama": {
+    "host": "http://localhost:11434",
+    "model": "gpt-oss:20b",
+    "num_ctx": 65536
+  },
+  "default_zips": [
+    "/mnt/c/Users/kirae/Downloads/ChatGpt/6b94875b2e20aa132cdc6640b12b92b460721b0ec39d1f5ea5a6a27f2e8cba94-2026-06-20-01-33-17-d9f765de52d44d3e8db4ca36d8dffa3e.zip"
+  ]
+}
