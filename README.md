@@ -33,23 +33,10 @@ to the next version. Output is flat JSON ready for agentic/Cursor workflows.
 ## 🚀 Fast start
 ```bash
 cd chatgpt-project-reconstructor
-bash setup.sh           # creates .venv, installs ijson, writes run.sh + ollama.sh
-bash run.sh --zip "/mnt/c/Users/kirae/Downloads/ChatGpt/<export>.zip"
-```
+pip install -r requirements.txt          # ijson (recommended for GB zips)
 
-`setup.sh` does the following:
-
-- Finds Python 3.10+ automatically (tries 3.12 → 3.11 → 3.10 → `python3`)
-- Creates `.venv` in the project root (no system-wide writes, no `--break-system-packages`)
-- Installs `ijson` into the venv; if the C build fails (no gcc) it prints a warning and falls back gracefully to the stdlib path (works, just loads large files into RAM)
-- Writes two executable wrappers into the project root: `run.sh` (Stages 1–3) and `ollama.sh` (Stage 4)
-
-If you prefer the manual activate style instead:
-```bash
-source .venv/bin/activate
-python run.py --zip "..."
-deactivate
-```
+# Deterministic stages (no LLM): point at your NEWEST export (snapshots are cumulative)
+python run.py --zip "/mnt/c/Users/kirae/Downloads/ChatGpt/<latest>.zip"
 
 # Inspect deterministic results before spending any tokens:
 cat output/store/clusters.json | less
@@ -62,6 +49,23 @@ ls output/bundles/
 python scripts/summarize_ollama.py --model gpt-oss:20b
 ```
 Result: `output/reconstructed_projects.json`.
+
+> **Note:** use the `run.sh` / `ollama.sh` wrappers (they use the venv's Python).
+> Calling bare `python` may fail on Ubuntu 24 (`python` isn't aliased to
+> `python3`); the wrappers avoid this.
+
+### Troubleshooting: `total=0` / `seen=0`
+The archive parsed but no conversations matched the expected shape. Inspect the
+real structure (read-only, modifies nothing):
+```bash
+source .venv/bin/activate
+python3 scripts/diagnose.py --zip "/mnt/c/.../<export>.zip"
+```
+It prints the zip entries, the first 400 bytes of `conversations.json`, the
+detected root kind, and a 3-conversation probe. The parser auto-detects three
+root shapes (top-level array, `{"conversations":[…]}`, and object-keyed-by-id);
+if `diagnose.py` shows a different shape, paste its output and extend
+`iter_conversations()` in `scripts/lib/chatgpt_parse.py`.
 
 ## 🧭 How to use the output
 Each `projects[]` entry is self-contained context for an agent: feed a single

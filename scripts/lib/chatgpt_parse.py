@@ -47,46 +47,91 @@ def find_conversations_entry(zf: zipfile.ZipFile) -> str:
 
 
 def _peek_root_kind(zf: zipfile.ZipFile, entry: str) -> str:
-    """Return 'array' or 'object' by reading the first non-ws byte."""
+    """Return 'array' or 'object' by reading the first non-ws byte (BOM-safe)."""
     with zf.open(entry, "r") as fh:
-        while True:
-            b = fh.read(1)
-            if not b:
-                break
-            c = b.decode("utf-8", "ignore")
-            if c.isspace():
-                continue
-            return "array" if c == "[" else "object"
+        head = fh.read(8)
+    if head[:3] == b"\xef\xbb\xbf":  # strip UTF-8 BOM
+        head = head[3:]
+    for byte in head:
+        c = chr(byte)
+        if c.isspace():
+            continue
+        return "array" if c == "[" else "object"
     raise ValueError("Empty conversations.json")
+
+
+def _looks_like_conversation(v) -> bool:
+    return isinstance(v, dict) and (
+        "mapping" in v or "title" in v or "current_node" in v
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Streaming iterator
 # --------------------------------------------------------------------------- #
 def iter_conversations(zip_path: str) -> Iterator[dict]:
-    """Yield conversation dicts one at a time, bounded memory."""
+    """
+    Yield conversation dicts one at a time, bounded memory, auto-detecting the
+    root shape. Tries strategies in order and commits to the first that yields
+    a conversation-looking object:
+      1. top-level array            -> ijson prefix 'item'
+      2. {"conversations":[...]}    -> ijson prefix 'conversations.item'
+      3. object keyed by id {id:{}} -> ijson kvitems at '' (yield values)
+    Falls back to stdlib json.load if ijson is unavailable.
+    """
     with zipfile.ZipFile(zip_path, "r") as zf:
         entry = find_conversations_entry(zf)
-        root_kind = _peek_root_kind(zf, entry)
+
         if _HAVE_IJSON:
-            prefix = "item" if root_kind == "array" else "conversations.item"
-            with zf.open(entry, "r") as fh:
-                yield from ijson.items(fh, prefix)
+            strategies = [
+                ("array", lambda: ijson.items(zf.open(entry, "r"), "item")),
+                ("conversations[]",
+                 lambda: ijson.items(zf.open(entry, "r"), "conversations.item")),
+                ("object-by-id",
+                 lambda: (v for _, v in ijson.kvitems(zf.open(entry, "r"), ""))),
+            ]
+            for name, make in strategies:
+                gen = make()
+                first = next(gen, _SENTINEL)
+                if first is _SENTINEL:
+                    continue
+                if not _looks_like_conversation(first):
+                    # strategy matched structurally but content is wrong; skip
+                    continue
+                yield first
+                for item in gen:
+                    if _looks_like_conversation(item):
+                        yield item
+                return
+            raise RuntimeError(
+                f"No conversations parsed from '{entry}'. Run "
+                "scripts/diagnose.py to inspect the export structure."
+            )
+
+        # ---- stdlib fallback (no ijson) ----
+        import sys
+        size = zf.getinfo(entry).file_size
+        if size > 200_000_000:
+            sys.stderr.write(
+                f"[warn] ijson not installed and {entry} is {size/1e6:.0f} MB; "
+                "loading fully into RAM. Install ijson for streaming.\n"
+            )
+        with zf.open(entry, "r") as fh:
+            data = json.load(io.TextIOWrapper(fh, encoding="utf-8-sig"))
+        if isinstance(data, list):
+            convs = data
+        elif isinstance(data, dict) and isinstance(data.get("conversations"), list):
+            convs = data["conversations"]
+        elif isinstance(data, dict):
+            convs = list(data.values())
         else:
-            # Pure-stdlib fallback. Loads the JSON fully — acceptable only on
-            # small archives; emits a warning to stderr for big ones.
-            import sys
-            size = zf.getinfo(entry).file_size
-            if size > 200_000_000:
-                sys.stderr.write(
-                    f"[warn] ijson not installed and {entry} is {size/1e6:.0f} MB; "
-                    "loading fully into RAM. Run: pip install ijson\n"
-                )
-            with zf.open(entry, "r") as fh:
-                data = json.load(io.TextIOWrapper(fh, encoding="utf-8"))
-            convs = data if isinstance(data, list) else data.get("conversations", [])
-            for c in convs:
+            convs = []
+        for c in convs:
+            if _looks_like_conversation(c):
                 yield c
+
+
+_SENTINEL = object()
 
 
 # --------------------------------------------------------------------------- #

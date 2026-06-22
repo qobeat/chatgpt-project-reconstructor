@@ -154,13 +154,14 @@ def main() -> int:
     cards_path = os.path.join(args.out, "cards.jsonl")
     index = load_index(index_path)
 
-    added, updated, skipped = 0, 0, 0
+    added, updated, skipped, seen = 0, 0, 0, 0
     for zp in args.zips:
         if not os.path.exists(zp):
             sys.stderr.write(f"[skip] missing: {zp}\n")
             continue
         sys.stderr.write(f"[scan] {zp}\n")
         for conv in iter_conversations(zp):
+            seen += 1
             card = build_card(conv)
             if not card:
                 continue
@@ -187,9 +188,15 @@ def main() -> int:
             f.write(json.dumps(meta, ensure_ascii=False) + "\n")
 
     sys.stderr.write(
-        f"[done] added={added} updated={updated} skipped={skipped} "
+        f"[done] seen={seen} added={added} updated={updated} skipped={skipped} "
         f"total={len(index)}\n  index: {index_path}\n  cards: {cards_path}\n"
     )
+    if seen == 0:
+        sys.stderr.write(
+            "\n[!] 0 conversations parsed from the archive(s).\n"
+            "    The export root shape may be unrecognized. Inspect it with:\n"
+            f"      python3 scripts/diagnose.py --zip <your.zip>\n"
+        )
     return 0
 
 
