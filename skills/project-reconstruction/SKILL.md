@@ -30,7 +30,7 @@ only writes fuzzy prose fields, schema-constrained.
 ## One-shot (deterministic stages)
 ```bash
 python run.py \
-  --zip /mnt/c/Users/kirae/Downloads/ChatGpt/<latest-export>.zip
+  --zip /mnt/c/<path>/<export>.zip
 # then Stage 4 (Cursor or Ollama)
 ```
 
