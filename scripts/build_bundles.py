@@ -15,6 +15,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import glob
 import json
 import os
 import sys
@@ -22,21 +23,45 @@ from typing import List
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
 import ulog  # noqa: E402
+import paths  # noqa: E402
+
+
+def _cleanup_orphan_bundles(out_dir: str, kept_slugs: set[str]) -> int:
+    """Remove stale .md bundles whose slug is no longer in the cluster set."""
+    removed = 0
+    for path in glob.glob(os.path.join(out_dir, "*.md")):
+        slug = os.path.splitext(os.path.basename(path))[0]
+        if slug not in kept_slugs:
+            try:
+                os.remove(path)
+                ulog.log("REMOVE orphan", path, status="stale bundle")
+                removed += 1
+            except OSError as e:
+                ulog.err("REMOVE orphan", path, error=e)
+    return removed
 
 
 def main() -> int:
+    cfg = paths.load_config()
+    default_char_budget = int(cfg.get("char_budget_per_bundle", 24000))
+
     ap = argparse.ArgumentParser(
         description="Stage 3: build one token-capped LLM bundle per cluster.")
     ap.add_argument("--store", default="output/store",
                     help="Store dir with clusters.json + transcripts/ (default: output/store).")
     ap.add_argument("--out", default="output/bundles",
                     help="Bundle output directory (default: output/bundles).")
-    ap.add_argument("--char-budget", type=int, default=24000,
-                    help="Max chars per bundle (~4 chars/token; default: 24000).")
+    ap.add_argument("--char-budget", type=int, default=None,
+                    help=f"Max chars per bundle (~4 chars/token; default: "
+                         f"{default_char_budget} from config).")
     ap.add_argument("--min-versions", type=int, default=1,
                     help="Only bundle clusters with >= this many version zips "
                          "(default: 1 = real projects; use 0 for all clusters).")
+    ap.add_argument("--no-cleanup", action="store_true",
+                    help="Do not remove orphan .md bundles from a prior run.")
     args = ap.parse_args()
+
+    char_budget = args.char_budget if args.char_budget is not None else default_char_budget
 
     os.makedirs(args.out, exist_ok=True)
     ulog.log("MKDIR", args.out, status="ready")
@@ -51,7 +76,6 @@ def main() -> int:
         ulog.err("READ", clusters_path, error=e)
         return 1
 
-    # Keep "projects": clusters with version zips, OR multi-conversation clusters.
     kept = [c for c in clusters
             if c.get("n_versions", 0) >= args.min_versions
             or c.get("n_conversations", 0) >= 2]
@@ -59,6 +83,13 @@ def main() -> int:
              status=f"{len(kept)} projects kept / {len(clusters)} clusters "
                     f"(min_versions={args.min_versions})")
     clusters = kept
+
+    if not args.no_cleanup:
+        kept_slugs = {c["slug"] for c in clusters}
+        n_removed = _cleanup_orphan_bundles(args.out, kept_slugs)
+        if n_removed:
+            ulog.log("CLEANUP", args.out, status=f"removed {n_removed} orphan bundles")
+
     try:
         with open(index_path, "r", encoding="utf-8") as f:
             index = json.load(f)
@@ -89,7 +120,7 @@ def main() -> int:
             c["member_ids"],
             key=lambda cid: (index.get(cid, {}).get("create_time") or 0),
         )
-        budget = args.char_budget - len("".join(parts))
+        budget = char_budget - len("".join(parts))
         for cid in members:
             meta = index.get(cid, {})
             tpath = os.path.join(tdir, f"{cid}.txt")

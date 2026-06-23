@@ -175,6 +175,9 @@ def main() -> int:
                     help="Log every transcript write (default: progress every 500).")
     ap.add_argument("--progress-every", type=int, default=500,
                     help="Progress cadence when not --verbose (default: 500).")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="Stop after N new/changed conversations (0 = all). "
+                         "Useful for fast model testing on a small subset.")
     args = ap.parse_args()
     ulog.set_verbose(args.verbose)
 
@@ -191,8 +194,11 @@ def main() -> int:
         ulog.err("READ", index_path, error=e)
         index = {}
 
-    added, updated, skipped, seen = 0, 0, 0, 0
+    added, updated, skipped, seen, written = 0, 0, 0, 0, 0
+    limit_reached = False
     for zp in args.zips:
+        if limit_reached:
+            break
         if not os.path.exists(zp):
             ulog.err("READ zip", zp, error="file not found")
             continue
@@ -204,15 +210,19 @@ def main() -> int:
         try:
             for conv in iter_conversations(zp):
                 seen += 1
-                card = build_card(conv)
-                if not card:
+                cid = conv.get("id") or conv.get("conversation_id")
+                if not cid:
                     ulog.dbg("SKIP conv", status="no id")
                     continue
-                cid = card["id"]
+                _, ut = conversation_dates(conv)
                 prev = index.get(cid)
-                if prev and (prev.get("update_time") or 0) >= (card["update_time"] or 0):
+                if prev and (prev.get("update_time") or 0) >= (ut or 0):
                     skipped += 1
                     ulog.dbg("SKIP conv", cid, status="unchanged")
+                    continue
+                card = build_card(conv)
+                if not card:
+                    ulog.dbg("SKIP conv", cid, status="build failed")
                     continue
                 tpath = os.path.join(tdir, f"{cid}.txt")
                 try:
@@ -230,6 +240,11 @@ def main() -> int:
                     updated += 1
                 else:
                     added += 1
+                written += 1
+                if args.limit > 0 and written >= args.limit:
+                    ulog.log("LIMIT", zp, status=f"reached --limit {args.limit}")
+                    limit_reached = True
+                    break
                 if not args.verbose and seen % args.progress_every == 0:
                     ulog.log("PROGRESS", zp,
                              status=f"seen={seen} added={added} "
@@ -253,7 +268,7 @@ def main() -> int:
         ulog.err("WRITE", cards_path, error=e)
 
     ulog.log("DONE", args.out,
-             status=f"seen={seen} added={added} updated={updated} "
+             status=f"seen={seen} written={written} added={added} updated={updated} "
                     f"skipped={skipped} total={len(index)}")
     if seen == 0:
         sys.stderr.write(

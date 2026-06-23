@@ -72,6 +72,59 @@ git diff published/
 A **run summary** (`output/RUN_SUMMARY_<timestamp>.md`) is written automatically
 at the end of `./run.sh` and `./ollama.sh`. Regenerate anytime with `./run_summary.sh`.
 
+### Isolated test runs (`--run-label`)
+
+Use a run label so test/subset runs never overwrite your main store:
+
+```bash
+# Small subset for fast iteration (50 new/changed conversations)
+./run.sh --zip "<export>.zip" --run-label modeltest --limit 50
+
+# Stage 4 on the isolated run only
+./ollama.sh --run-label modeltest --limit 5
+
+# Compare models on the same small bundle set
+python scripts/compare_models.py --run-label modeltest --limit-clusters 5
+```
+
+Outputs land under `output/runs/<label>/` (`store/`, `bundles/`, `reconstructed_projects.json`).
+A `output/runs/latest` pointer tracks the most recent labeled run. The default
+`output/store` is untouched.
+
+### Ollama model testing
+
+Preflight and model discovery reuse the polished [ollama-test](~/dev/WSL/ollama/ollama-test) tool:
+
+```bash
+./ollama_test.sh status          # host reachability
+./ollama_test.sh models          # installed models + context metadata
+./ollama_test.sh test gpt-oss:20b   # quick smoke + tok/s metrics
+```
+
+Stage 4 reads Ollama defaults from `config/reconstruct.config.json` (`host`, `model`, `num_ctx`).
+Useful flags: `--dry-run`, `--incremental`, `--keep-alive 24h`, `--no-preflight`.
+
+### Run catalog (`./runs.sh`)
+
+Browse past runs, search extracts, and migrate legacy flat `output/` layout:
+
+```bash
+# One-time: move existing output/store + bundles into runs/<label>/
+./runs.sh migrate
+
+./runs.sh list                   # all runs (cards, clusters, bundles, projects)
+./runs.sh show                   # latest run details + paths
+./runs.sh search ados            # search cards, clusters, bundles
+./runs.sh search ados --full     # also grep transcript bodies
+./runs.sh cards --limit 20       # catalogue of conversation extracts
+./runs.sh clusters --min-versions 1
+./runs.sh bundles --search ai
+./runs.sh paths --export         # shell exports for RUN_LABEL, STORE, BUNDLES
+```
+
+Each labeled run lives under `output/runs/<label>/` with a `run.json` manifest and
+global index at `output/runs/catalog.json`.
+
 ---
 
 ## Setup and directory layout
