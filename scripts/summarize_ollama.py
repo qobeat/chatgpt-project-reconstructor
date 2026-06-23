@@ -28,6 +28,8 @@ import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
 import ulog  # noqa: E402
+import paths  # noqa: E402
+import run_log  # noqa: E402
 
 SYS_PROMPT = (
     "You reconstruct software project history from reduced chat transcripts. "
@@ -79,16 +81,16 @@ def main() -> int:
         description="Stage 4 (optional): fill fuzzy schema fields per project "
                     "using a local Ollama model. Deterministic facts are merged "
                     "over model output.")
-    ap.add_argument("--store", default="output/store",
-                    help="Store dir with clusters.json (default: output/store).")
-    ap.add_argument("--bundles", default="output/bundles",
-                    help="Bundle dir with <slug>.md files (default: output/bundles).")
+    ap.add_argument("--store", default=None,
+                    help="Store dir with clusters.json (default: from paths).")
+    ap.add_argument("--bundles", default=None,
+                    help="Bundle dir with <slug>.md files (default: from paths).")
     ap.add_argument("--model", default="gpt-oss:20b",
                     help="Ollama model tag (default: gpt-oss:20b).")
     ap.add_argument("--host", default="http://localhost:11434",
                     help="Ollama host (default: http://localhost:11434).")
-    ap.add_argument("--out", default="output/reconstructed_projects.json",
-                    help="Final JSON path.")
+    ap.add_argument("--out", default=None,
+                    help="Final JSON path (default: from paths).")
     ap.add_argument("--num-ctx", type=int, default=32768,
                     help="Model context window (default: 32768; lower if OOM/500).")
     ap.add_argument("--timeout", type=int, default=300,
@@ -98,9 +100,20 @@ def main() -> int:
     ap.add_argument("--min-versions", type=int, default=1,
                     help="Only summarize clusters with >= this many version zips "
                          "(default: 1; use 0 for all).")
+    ap.add_argument("--no-summary", action="store_true",
+                    help="Do not write output/RUN_SUMMARY_<timestamp>.md.")
     args = ap.parse_args()
 
-    cpath = os.path.join(args.store, "clusters.json")
+    store = paths.store_dir(args.store)
+    bundles = paths.bundles_dir(args.bundles)
+    out_path = paths.reconstructed_json(args.out)
+    root = os.path.abspath(os.path.dirname(store))
+
+    cmd = " ".join([f"./ollama.sh"] + sys.argv[1:])
+    run_log.append_command(cmd, root)
+    run_log.stage_start("summarize", root)
+
+    cpath = os.path.join(store, "clusters.json")
     try:
         with open(cpath, "r", encoding="utf-8") as f:
             clusters = json.load(f)
@@ -117,7 +130,7 @@ def main() -> int:
     projects = []
     for c in clusters:
         slug = c["slug"]
-        bpath = os.path.join(args.bundles, f"{slug}.md")
+        bpath = os.path.join(bundles, f"{slug}.md")
         if not os.path.exists(bpath):
             ulog.dbg("READ bundle", bpath, status="missing, skipped")
             continue
@@ -176,13 +189,25 @@ def main() -> int:
         "projects": projects,
     }
     try:
-        with open(args.out, "w", encoding="utf-8") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
-        ulog.log("WRITE", args.out, status=f"{len(projects)} projects")
+        ulog.log("WRITE", out_path, status=f"{len(projects)} projects")
     except OSError as e:
-        ulog.err("WRITE", args.out, error=e)
+        ulog.err("WRITE", out_path, error=e)
+        run_log.stage_end("summarize", root, error=str(e))
         return 1
-    ulog.log("DONE", args.out, status=f"{len(projects)} projects")
+    run_log.stage_end("summarize", root, n_projects=len(projects), model=args.model)
+    ulog.log("DONE", out_path, status=f"{len(projects)} projects")
+
+    if not args.no_summary:
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+            from collect_run_stats import write_summary  # noqa: WPS433
+            summary_path = write_summary(root=root, label="Full pipeline")
+            sys.stderr.write(f"[summarize] Summary: {summary_path}\n")
+        except Exception as e:
+            sys.stderr.write(f"[summarize] Summary skipped: {e}\n")
+
     return 0
 
 

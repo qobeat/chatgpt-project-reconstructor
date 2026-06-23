@@ -21,17 +21,17 @@ to keep only the **canonical branch**, and extracts content across
 
 ## Run
 ```bash
-pip install ijson                              # recommended for GB-scale zips
-python3 scripts/extract_cards.py \
-    --zip /path/to/export.zip \
-    --out output/store
+bash setup.sh
+./run.sh --zip /path/to/export.zip
+# or explicitly:
+python3 scripts/extract_cards.py --zip /path/to/export.zip --out output/store
 ```
-Outputs:
-- `output/store/transcripts/<conversation_id>.txt` — reduced transcript
+Outputs (under `$RECONSTRUCTOR_DATA_ROOT/store/` or `output/store/`):
+- `transcripts/<conversation_id>.txt` — reduced transcript
   (assistant code bodies replaced by `‹code lang Nln :: first-line›` placeholders).
-- `output/store/index.json` — incremental store keyed by conversation id
+- `index.json` — incremental store keyed by conversation id
   (re-running on a newer export updates only changed chats; newer `update_time` wins).
-- `output/store/cards.jsonl` — one compact card per chat: title, dates,
+- `cards.jsonl` — one compact card per chat: title, dates,
   `zip_files` (filename+slug+version), `file_artifacts`, `slug_votes`.
 
 ## Token discipline

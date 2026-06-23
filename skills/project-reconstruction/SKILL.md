@@ -29,12 +29,22 @@ only writes fuzzy prose fields, schema-constrained.
 
 ## One-shot (deterministic stages)
 ```bash
-./run.sh \
-  --zip /mnt/c/Users/kirae/Downloads/ChatGpt/<latest-export>.zip
+./run.sh --zip "<path-to-latest-export>.zip"
 # then Stage 4 (Cursor or Ollama)
+./ollama.sh --model qwen2.5-coder:14b
 ```
 
-## Output: `output/reconstructed_projects.json`
+## Output paths
+With `.env` / `RECONSTRUCTOR_DATA_ROOT` set, artifacts live under that data root.
+Without it, defaults are under `output/` (gitignored):
+
+- `$DATA_ROOT/store/` — transcripts, cards, clusters
+- `$DATA_ROOT/bundles/` — LLM context bundles
+- `$DATA_ROOT/reconstructed_projects.json` — full internal JSON
+
+Sanitized GitHub copy: `published/projects.json` via `python scripts/export_public.py --review`.
+
+## Output schema (full internal JSON)
 Per project: `project_name, slug, start_date, end_date, n_conversations,
 n_versions, version_zip_files[], file_artifacts[], source_conversation_ids[],
 goal, objectives[], requirements[], requirements_evolution[{date,change}],

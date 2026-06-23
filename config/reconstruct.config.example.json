@@ -1,5 +1,9 @@
 {
-  "_comment": "Committed defaults only — no personal paths. Copy reconstruct.config.example.json to reconstruct.config.local.json for local overrides (gitignored).",
+  "_comment": "Copy to reconstruct.config.local.json (gitignored) and edit paths for your machine.",
+  "data_root": "~/chatgpt-reconstructor-data",
+  "default_zips": [
+    "/path/to/your/latest-chatgpt-export.zip"
+  ],
   "priority_keywords": [
     "ados", "ados-arena", "opencode", "hermes", "specforge", "mcp", "fastmcp",
     "ollama", "firecrawl", "repo-classify", "github-catalog", "cursor",

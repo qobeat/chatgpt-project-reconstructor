@@ -3,141 +3,393 @@
 Reconstruct a structured, machine-readable history of your projects directly
 from raw multi-GB ChatGPT `.zip` exports — no database, no cloud, local-first.
 
-## 🎯 Goal
-Programmatically reconstruct, from raw `conversations.json` exports, a per-project
-record containing: name, slug, start/end date, number of versions, **every
-version `.zip` filename**, goal, objectives, requirements, how those requirements
-evolved across chats, quickstart, how-to-use (with a use case), and how to update
-to the next version. Output is flat JSON ready for agentic/Cursor workflows.
+---
 
-## 📋 Objectives
-- **Zero-extraction triage** — stream straight from the `.zip`; never unpack the
-  multi-GB payload or load the whole JSON into RAM.
-- **Token-optimized context** — drop UI/mapping noise *and* assistant code bodies
-  (the real token sink) before any LLM sees the data.
-- **Canonical, not noisy** — follow `current_node → root` so discarded
-  regenerations and forked drafts are excluded.
-- **Deterministic-first** — versions, dates, file artifacts and clustering are
-  computed in code; the LLM only writes prose, schema-constrained → no
-  hallucinated filenames or versions.
-- **Reusable** — an incremental JSON store keyed by conversation id absorbs
-  future exports cheaply.
+## Goal
 
-## ⚙️ Pipeline
+From raw `conversations.json` exports, produce a per-project record containing:
+name, slug, start/end date, number of versions, **every version `.zip` filename**,
+goal, objectives, requirements, how those requirements evolved across chats,
+quickstart, how-to-use (with a use case), and how to update to the next version.
+
+Output is flat JSON ready for agentic/Cursor workflows.
+
+## How it works
+
 ```
 .zip ──▶ extract_cards ──▶ cluster_projects ──▶ build_bundles ──▶ [LLM] ──▶ reconstructed_projects.json
-        (stream ALL          (union-find on       (projects only,    (Cursor or
-         conversations-*      zip-basename slugs)   token-capped)      Ollama)
-         shards, canonical
-         path, reduce)
+         Stage 1            Stage 2              Stage 3           Stage 4
+         stream shards      union-find slugs     token-capped      Cursor or Ollama
+         canonical path     from zip basenames   .md per project
 ```
-Modern exports shard conversations across `conversations-000.json … -NNN.json`
-(plus a `chat.html` and hundreds of `file-*.dat` attachments) — all shards are
-streamed; sidecars and attachments are ignored. Only clusters that look like
-real **projects** (≥1 version `.zip`, or ≥2 conversations) are bundled/summarized
-by default; raw one-off chats (math questions, support threads) are skipped. Use
-`--min-versions 0` to include everything.
 
-## 🚀 Fast start
+| Stage | Script | LLM? | Output |
+|-------|--------|------|--------|
+| 1 | `extract_cards.py` | No | `store/transcripts/`, `cards.jsonl`, `index.json` |
+| 2 | `cluster_projects.py` | No | `store/clusters.json` |
+| 3 | `build_bundles.py` | No | `bundles/<slug>.md` |
+| 4 | `summarize_ollama.py` or Cursor | Yes | `reconstructed_projects.json` |
+
+Modern exports shard conversations across `conversations-000.json … -NNN.json`.
+All shards are streamed; attachments are ignored. By default only clusters that
+look like real **projects** (≥1 version `.zip`, or ≥2 conversations) are bundled
+and summarized. Use `--min-versions 0` to include everything.
+
+**Design principles:** zero-extraction streaming · token-optimized transcripts
+(code bodies stripped) · canonical conversation path only · deterministic facts
+computed in code · incremental store keyed by conversation id.
+
+---
+
+## Quick start
+
 ```bash
-cd chatgpt-project-reconstructor
-
-# 1. One-time setup: creates .venv, installs ijson, writes run.sh + ollama.sh
+# One-time setup
+cp .env.example .env                  # optional: edit VENV_DIR + data paths
+cp config/reconstruct.config.example.json config/reconstruct.config.local.json  # optional
 bash setup.sh
 
-# 2. Deterministic stages (no LLM). Point at your NEWEST export (snapshots are cumulative).
-./run.sh --zip "/mnt/c/Users/kirae/Downloads/ChatGpt/<latest>.zip"
-#   add --verbose for per-file read/write logging
+# Stages 1–3 (deterministic, no LLM tokens)
+./run.sh --zip "<path-to-latest-export>.zip"
 
-# 3. Inspect deterministic results BEFORE spending any tokens:
-cat output/store/clusters.json
+# Inspect before spending tokens
+cat output/store/clusters.json        # or $RECONSTRUCTOR_DATA_ROOT/store/…
 ls output/bundles/
 
-# 4. Stage 4 — LLM summary, choose ONE:
-#    A) Local Ollama (offline):
-./ollama.sh --model gpt-oss:20b
-#       Only ~projects are summarized (not every chat). If a call 500s or stalls:
-#       ./ollama.sh --model gpt-oss:20b --num-ctx 16384 --timeout 180
-#       or use a faster non-thinking model:
-#       ./ollama.sh --model qwen2.5-coder:14b --num-ctx 16384
-#    B) Cursor: attach schema/project_history_schema.json + output/bundles/<slug>.md,
-#       paste prompts/cursor_extraction_prompt.md (run once per bundle).
+# Stage 4 — pick one:
+./ollama.sh --model qwen2.5-coder:14b --num-ctx 16384   # local Ollama
+# OR Cursor: attach schema/project_history_schema.json + bundles/<slug>.md,
+#            paste prompts/cursor_extraction_prompt.md (once per bundle)
+
+# Publish safe copy to GitHub
+python scripts/export_public.py --md --review
+git diff published/
 ```
-Result: `output/reconstructed_projects.json`.
 
-`setup.sh` finds Python 3.10+, builds `.venv`, installs `ijson` (graceful
-stdlib fallback if the build fails), and generates the `run.sh` / `ollama.sh`
-wrappers that invoke the venv's Python — so you never hit the Ubuntu 24
-`python`-not-found or `externally-managed-environment` walls.
+> Use `./run.sh`, `./ollama.sh`, `./diagnose.sh`, `./run_summary.sh` — they load
+> `.env` and activate the external venv. Bare `python` may fail on Ubuntu 24.
 
-> **Note:** use the `run.sh` / `ollama.sh` wrappers (they use the venv's Python).
-> Calling bare `python` may fail on Ubuntu 24 (`python` isn't aliased to
-> `python3`); the wrappers avoid this.
+A **run summary** (`output/RUN_SUMMARY_<timestamp>.md`) is written automatically
+at the end of `./run.sh` and `./ollama.sh`. Regenerate anytime with `./run_summary.sh`.
 
-### Troubleshooting: `total=0` / `seen=0`
-The archive parsed but no conversations matched the expected shape. Inspect the
-real structure (read-only, modifies nothing):
+---
+
+## Setup and directory layout
+
+The project separates **tooling** (this repo), **personal data** (never git),
+**published summaries** (git, sanitized), and **venv** (never git).
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  THIS REPO (public GitHub)                                      │
+│  scripts/  schema/  skills/  config/  published/                │
+└─────────────────────────────────────────────────────────────────┘
+         │                              ▲
+         │ pipeline                     │ export_public.py --review
+         ▼                              │
+┌─────────────────────────┐    ┌────────────────────────┐
+│  LOCAL DATA (gitignored) │    │  published/ (git OK)   │
+│  $RECONSTRUCTOR_DATA_ROOT│    │  projects.json         │
+│  or output/ (fallback)   │    │  projects/<slug>.md    │
+│  ├─ store/               │    └────────────────────────┘
+│  ├─ bundles/             │
+│  └─ reconstructed_…json  │
+└─────────────────────────┘
+
+┌─────────────────────────┐
+│  VENV (gitignored)      │
+│  ~/.venvs/chatgpt-…     │
+└─────────────────────────┘
+```
+
+### Configuration files
+
+| File | Committed? | Purpose |
+|------|------------|---------|
+| `.env.example` | Yes | Template — copy to `.env` |
+| `.env` | **No** | `VENV_DIR`, `RECONSTRUCTOR_DATA_ROOT` |
+| `config/reconstruct.config.json` | Yes | Shared tuning knobs (no personal paths) |
+| `config/reconstruct.config.example.json` | Yes | Template for local overrides |
+| `config/reconstruct.config.local.json` | **No** | Your `data_root`, `default_zips` |
+
+Default paths (when `.env` is unset):
+
+| Setting | Default |
+|---------|---------|
+| Virtualenv | `~/.venvs/chatgpt-project-reconstructor/` |
+| Data root | `output/` inside repo (gitignored) |
+| With `.env` | `~/chatgpt-reconstructor-data/` |
+
+Path resolution lives in `scripts/lib/paths.py` — all stages read
+`RECONSTRUCTOR_DATA_ROOT` from the environment or local config.
+
+### Clone and first-time setup
+
 ```bash
-source .venv/bin/activate
-python3 scripts/diagnose.py --zip "/mnt/c/.../<export>.zip"
+git clone git@github.com:<org>/chatgpt-project-reconstructor.git
+cd chatgpt-project-reconstructor
+cp .env.example .env
+bash setup.sh
 ```
-It prints the zip entries, the first 400 bytes of `conversations.json`, the
-detected root kind, and a 3-conversation probe. The parser auto-detects three
-root shapes (top-level array, `{"conversations":[…]}`, and object-keyed-by-id);
-if `diagnose.py` shows a different shape, paste its output and extend
-`iter_conversations()` in `scripts/lib/chatgpt_parse.py`.
 
-## 🧭 How to use the output
-Each `projects[]` entry is self-contained context for an agent: feed a single
-project object to Cursor/Claude to resume work, generate a README, or seed your
-ADOS catalog. `source_conversation_ids` lets you jump back to raw transcripts in
-`output/store/transcripts/`.
+---
 
-## 🔁 How to update (future exports)
-Run `./run.sh --zip "<new-export>.zip"` again. The store keyed by
-conversation id updates only new/changed chats (newer `update_time` wins), then
-re-cluster/re-summarize. No need to reprocess history.
+## Outputs
 
-## 🛠️ How to change / extend
-- **New `content_type`** (OpenAI adds these over time): extend `message_text()`
-  in `scripts/lib/chatgpt_parse.py`.
-- **Clustering too coarse/fine**: tune `--min-slug-votes` (cluster) or add slug
-  aliases after Stage 2.
-- **Bundle truncation**: raise `--char-budget` (keep under your model context).
-- **Different LLM**: edit `scripts/summarize_ollama.py` (any Ollama model) or use
-  the Cursor prompt with any assistant.
-- **LLM call 500 / too slow**: the summarizer sends `think:false`, caps context,
-  truncates bundles, and retries with halved context on error. Tune with
-  `--num-ctx`, `--timeout`, `--max-chars`, or switch `--model` to a faster
-  non-thinking model. `gpt-oss:20b` at 64k ctx can OOM a 24 GB GPU — keep
-  `--num-ctx` ≤ 32768.
-- **Project clustering**: a project is detected from its version-zip basename
-  (`<project>-<date>-<label>-v<ver>.zip` → slug `<project>`). One-off chats with
-  no zip are skipped unless `--min-versions 0`.
-- **Schema**: edit `schema/project_history_schema.json`; keep deterministic
-  fields authoritative.
+### Internal (local only)
 
-## 📁 Layout
+| Path | Contents |
+|------|----------|
+| `store/transcripts/<id>.txt` | Reduced chat text (code stripped) |
+| `store/cards.jsonl` | One compact card per conversation |
+| `store/index.json` | Incremental store (id-keyed; newer export wins) |
+| `store/clusters.json` | Deterministic project clusters |
+| `bundles/<slug>.md` | Token-capped context for Stage 4 |
+| `reconstructed_projects.json` | **Full** JSON incl. `source_conversation_ids` |
+
+Schema: `schema/project_history_schema.json`
+
+### Published (safe for GitHub)
+
+| Path | Contents |
+|------|----------|
+| `published/projects.json` | Sanitized project catalog |
+| `published/projects/<slug>.md` | Optional per-project markdown (`--md`) |
+
+Schema: `schema/project_history_public_schema.json` — no conversation IDs,
+zip filenames reduced to basenames only.
+
+Produced by:
+
+```bash
+python scripts/export_public.py --md --review
 ```
-run.py                         orchestrator (Stages 1-3)
-schema/                        project_history_schema.json
-config/                        reconstruct.config.json
+
+---
+
+## Privacy and GitHub
+
+### Never commit
+
+- ChatGPT export `.zip` files
+- `output/` or `$RECONSTRUCTOR_DATA_ROOT/` (transcripts, bundles, full JSON)
+- `reconstructed_projects.json` (contains `source_conversation_ids`)
+- `.env`, `config/reconstruct.config.local.json`
+
+### Safe to commit
+
+- All source code, schema, skills, prompts
+- `published/` after `export_public.py --review`
+
+### Publish checklist
+
+1. `python scripts/export_public.py --md --review` — fails on emails / home paths
+2. Skim `goal`, `how_to_use`, `use_case` for accidental names or URLs
+3. `git diff published/`
+4. Optional: `bash scripts/check_no_secrets.sh` (or install as pre-commit hook)
+
+### Initial git push
+
+```bash
+git init && git add -A && git status   # verify: no output/, .env, transcripts, *.zip
+git remote add origin git@github.com:<org>/chatgpt-project-reconstructor.git
+git push -u origin main
+```
+
+If you accidentally committed chat data, scrub history with
+[`git filter-repo`](https://github.com/newren/git-filter-repo) before pushing.
+
+---
+
+## Run summaries
+
+Each pipeline run can produce a timestamped report in the data root:
+
+```
+output/RUN_SUMMARY_20260622_062120.md     # example
+```
+
+Includes: commands run, conversation/cluster/bundle counts, file sizes, per-stage
+timings, total wall time.
+
+| Trigger | When |
+|---------|------|
+| Automatic | End of `./run.sh` (Stages 1–3) and `./ollama.sh` (Stage 4) |
+| Manual | `./run_summary.sh` or `python scripts/collect_run_stats.py` |
+| Skip | Pass `--no-summary` to `run.py` or `summarize_ollama.py` |
+
+Supporting files (gitignored, in data root):
+
+- `RUN_COMMANDS.log` — append-only command history
+- `.run_manifest.json` — per-stage wall-clock seconds
+
+---
+
+## Updating (future exports)
+
+Exports are cumulative full snapshots. Run only the **newest** `.zip` unless you
+deleted chats between exports:
+
+```bash
+./run.sh --zip "<new-export>.zip"       # incremental: changed chats only
+./ollama.sh --model qwen2.5-coder:14b   # re-summarize
+python scripts/export_public.py --md --review
+```
+
+---
+
+## Performance tips
+
+From a typical run (~4k conversations, 180 projects):
+
+| Phase | Typical time | Notes |
+|-------|--------------|-------|
+| Stages 1–3 | ~2–3 min | Already fast; ensure `ijson` is installed |
+| Stage 4 (Ollama) | ~1 hr+ | **Bottleneck** — sequential LLM calls |
+
+Stage 4 improvements:
+
+- Use a smaller/faster model (`qwen2.5-coder:14b` beats `gpt-oss:20b` for prose)
+- Lower `--num-ctx` and `--max-chars`
+- Run Cursor Stage 4 in parallel across bundles
+- On re-exports, only re-summarize changed slugs (manual today)
+
+Stage 1 tip: read exports from the Linux filesystem, not `/mnt/c/…`, when possible.
+
+---
+
+## Troubleshooting
+
+### `total=0` / `seen=0`
+
+The archive parsed but no conversations matched. Inspect structure (read-only):
+
+```bash
+./diagnose.sh --zip "<path-to-export>.zip"
+```
+
+If the root JSON shape differs, extend `iter_conversations()` in
+`scripts/lib/chatgpt_parse.py`.
+
+### Ollama 500 / slow / OOM
+
+The summarizer sends `think:false`, truncates bundles, and retries with halved
+context. Tune `--num-ctx`, `--timeout`, `--max-chars`, or switch `--model`.
+Keep `--num-ctx` ≤ 32768 for large models on limited GPU RAM.
+
+---
+
+## Extending
+
+| Need | Where |
+|------|-------|
+| New OpenAI `content_type` | `message_text()` in `scripts/lib/chatgpt_parse.py` |
+| Clustering too coarse/fine | `--min-slug-votes` or slug aliases |
+| Bundle too large | `--char-budget` (stay under model context) |
+| Different LLM | `summarize_ollama.py` or Cursor prompt |
+| Schema change | `schema/project_history_schema.json` (+ public schema) |
+
+---
+
+## Project layout
+
+```
+run.py / run.sh              Stages 1–3 orchestrator + wrapper
+ollama.sh / diagnose.sh      Stage 4 + export diagnostics
+run_summary.sh               Write RUN_SUMMARY_<timestamp>.md
+setup.sh                     Bootstrap external venv + ijson
+.env.example                 VENV_DIR, RECONSTRUCTOR_DATA_ROOT
+
+config/
+  reconstruct.config.json           committed defaults
+  reconstruct.config.example.json   local override template
+
+schema/
+  project_history_schema.json         full internal schema
+  project_history_public_schema.json  GitHub-safe schema
+
+published/                   sanitized summaries (committed)
 scripts/
-  lib/chatgpt_parse.py         streaming + canonical path + robust extraction
-  extract_cards.py             Stage 1
-  cluster_projects.py          Stage 2
-  build_bundles.py             Stage 3
-  summarize_ollama.py          Stage 4 (optional, local LLM)
-skills/
-  chatgpt-export-triage/       SKILL.md
-  project-reconstruction/      SKILL.md
-prompts/cursor_extraction_prompt.md
-output/                        store/, bundles/, reconstructed_projects.json
-MANIFEST.md                    agent execution contract
+  extract_cards.py           Stage 1
+  cluster_projects.py        Stage 2
+  build_bundles.py           Stage 3
+  summarize_ollama.py        Stage 4
+  export_public.py           strip PII → published/
+  collect_run_stats.py       run summary reports
+  check_no_secrets.sh        pre-commit safety net
+  lib/
+    chatgpt_parse.py         streaming parser
+    paths.py                 data-root resolution
+    run_log.py               command log + stage timings
+
+skills/                      Cursor agent skills
+prompts/                     Cursor Stage 4 prompt
+tests/                       unit tests (stdlib unittest)
+output/                      fallback data dir (gitignored)
+MANIFEST.md                  agent execution contract
 ```
+
+---
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v   # 29 tests, stdlib only
+bash scripts/check_no_secrets.sh           # block accidental PII commits
+```
+
+Test coverage includes: path resolution, export sanitization, slug parsing,
+schema roundtrip, repo hygiene (no personal paths in committed files), pre-commit
+hook behavior, run summary generation.
+
+---
+
+## Recent project improvements
+
+This section documents infrastructure added to make the repo safe for GitHub and
+easier to operate day-to-day.
+
+### Repository and privacy
+
+- **Three-zone layout** — tooling in git, personal data outside repo, sanitized
+  summaries in `published/`.
+- **External venv** — `setup.sh` creates `~/.venvs/chatgpt-project-reconstructor/`
+  instead of `.venv/` in the project tree.
+- **External data root** — `RECONSTRUCTOR_DATA_ROOT` (via `.env` or local config)
+  keeps transcripts and bundles out of git; falls back to `output/` for quick trials.
+- **Config split** — committed `reconstruct.config.json` has no personal paths;
+  use gitignored `reconstruct.config.local.json` for zip paths.
+- **Expanded `.gitignore`** — blocks `.env`, transcripts, bundles, full JSON, zips.
+
+### GitHub publishing
+
+- **`scripts/export_public.py`** — strips `source_conversation_ids`, normalizes
+  zip paths to basenames; `--review` scans for emails/home paths; `--md` writes
+  per-project markdown.
+- **`schema/project_history_public_schema.json`** — schema for sanitized output.
+- **`scripts/check_no_secrets.sh`** — optional pre-commit hook; scans staged
+  `*.json` for conversation IDs and user paths.
+
+### Run observability
+
+- **`scripts/collect_run_stats.py`** + **`run_summary.sh`** — generates
+  `RUN_SUMMARY_<timestamp>.md` with counts, sizes, and timings.
+- **`scripts/lib/run_log.py`** — logs commands to `RUN_COMMANDS.log` and stage
+  timings to `.run_manifest.json`.
+- **Auto-summary** — `./run.sh` and `./ollama.sh` write a summary at exit
+  (disable with `--no-summary`).
+
+### Quality
+
+- **`tests/`** — 29 unit/integration tests (paths, export, hygiene, slug parsing,
+  schema validation, run summaries).
+- **Skills/docs** — removed hardcoded personal paths; aligned with new path model.
+
+---
 
 ## Notes
-- Exports are cumulative full snapshots; deleted chats are absent from later
-  exports. You can ignore older archives unless you deleted chats between them.
-- Everything runs locally. No data leaves the machine (Ollama path is fully
-  offline; Cursor path sends only the reduced bundles you choose).
+
+- Exports are cumulative; deleted chats disappear from later snapshots.
+- Everything runs locally. Ollama is fully offline; Cursor sends only the bundles
+  you attach.
+- Only `published/` is intended for GitHub — review before every push.

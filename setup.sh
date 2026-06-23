@@ -3,13 +3,20 @@
 # Run once from the project root:  bash setup.sh
 set -euo pipefail
 
-VENV=".venv"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
+VENV_DIR="${VENV_DIR:-$HOME/.venvs/chatgpt-project-reconstructor}"
 PYTHON=""
 
 # ── find python 3.10+ ──────────────────────────────────────────────────────
 for candidate in python3.12 python3.11 python3.10 python3; do
     if command -v "$candidate" &>/dev/null; then
-        ver=$("$candidate" -c 'import sys; print(sys.version_info[:2])')
         if "$candidate" -c 'import sys; assert sys.version_info >= (3,10)' 2>/dev/null; then
             PYTHON="$candidate"
             break
@@ -23,13 +30,13 @@ fi
 echo "[setup] Using $PYTHON ($("$PYTHON" --version))"
 
 # ── create venv if absent ─────────────────────────────────────────────────
-if [[ ! -d "$VENV" ]]; then
-    echo "[setup] Creating venv at $VENV ..."
-    "$PYTHON" -m venv "$VENV"
+if [[ ! -d "$VENV_DIR" ]]; then
+    echo "[setup] Creating venv at $VENV_DIR ..."
+    mkdir -p "$(dirname "$VENV_DIR")"
+    "$PYTHON" -m venv "$VENV_DIR"
 fi
 
-PIP="$VENV/bin/pip"
-VPYTHON="$VENV/bin/python"
+PIP="$VENV_DIR/bin/pip"
 
 # ── upgrade pip quietly ───────────────────────────────────────────────────
 "$PIP" install --quiet --upgrade pip
@@ -43,44 +50,23 @@ else
     echo "[setup] ijson installed OK."
 fi
 
-# ── write run.sh activation wrapper ───────────────────────────────────────
-cat > run.sh << 'RUN'
-#!/usr/bin/env bash
-# run.sh — activate venv then delegate to run.py
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/.venv/bin/activate"
-exec python "$SCRIPT_DIR/run.py" "$@"
-RUN
-chmod +x run.sh
+# ── ensure .env exists ───────────────────────────────────────────────────
+if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
+    cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+    echo "[setup] Created .env from .env.example — edit paths if needed."
+fi
 
-# ── write ollama.sh wrapper ────────────────────────────────────────────────
-cat > ollama.sh << 'OLL'
-#!/usr/bin/env bash
-# ollama.sh — activate venv then run Stage 4 (local Ollama summarizer)
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/.venv/bin/activate"
-exec python "$SCRIPT_DIR/scripts/summarize_ollama.py" "$@"
-OLL
-chmod +x ollama.sh
-
-# ── write diagnose.sh wrapper ──────────────────────────────────────────────
-cat > diagnose.sh << 'DIAG'
-#!/usr/bin/env bash
-# diagnose.sh — inspect an export's structure (read-only)
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/.venv/bin/activate"
-exec python "$SCRIPT_DIR/scripts/diagnose.py" "$@"
-DIAG
-chmod +x diagnose.sh
+# ── ensure local config template hint ─────────────────────────────────────
+if [[ ! -f "$SCRIPT_DIR/config/reconstruct.config.local.json" ]]; then
+    echo "[setup] Tip: copy config/reconstruct.config.example.json to"
+    echo "        config/reconstruct.config.local.json for default_zips / data_root."
+fi
 
 echo ""
-echo "[setup] Done. Wrappers written: run.sh, ollama.sh, diagnose.sh"
+echo "[setup] Done. Venv: $VENV_DIR"
 echo ""
 echo "  Run the pipeline (deterministic Stages 1-3):"
-echo "    ./run.sh --zip \"/mnt/c/Users/kirae/Downloads/ChatGpt/<export>.zip\""
+echo "    ./run.sh --zip \"<path-to-export>.zip\""
 echo "    ./run.sh --zip \"<export>.zip\" --verbose      # per-file logging"
 echo ""
 echo "  Stage 4 — LLM summary (offline):"
@@ -89,5 +75,5 @@ echo ""
 echo "  Inspect an export if parsing yields 0 (read-only):"
 echo "    ./diagnose.sh --zip \"<export>.zip\""
 echo ""
-echo "  Manual venv (alternative to wrappers):"
-echo "    source .venv/bin/activate && python run.py --zip \"<export>.zip\""
+echo "  Publish sanitized summaries to GitHub:"
+echo "    ./run.sh ... && ./ollama.sh ... && python scripts/export_public.py --review"
