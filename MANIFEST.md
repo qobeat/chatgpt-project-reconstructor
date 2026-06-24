@@ -35,12 +35,8 @@ For GitHub, run `scripts/export_public.py` to write sanitized summaries to
      `added/updated/skipped` and a non-zero cluster count.
 2. Present `$DATA_ROOT/store/clusters.json` summary to the user BEFORE Stage 4
    (slugs, n_conversations, n_versions, date span). This is the cheap checkpoint.
-3. Stage 4 — LLM summary (default to Ollama if `--model` reachable, else emit the
-   Cursor instructions):
-   - Ollama: `./ollama.sh --model gpt-oss:20b`
-   - Cursor: for each bundle `<slug>.md`, attach it +
-     `schema/project_history_schema.json`, run `prompts/cursor_extraction_prompt.md`,
-     append the emitted object to `$DATA_ROOT/reconstructed_projects.json`.
+3. Stage 4 — LLM summary via local Ollama:
+   - `./ollama.sh --model gpt-oss:20b`
    - SUCCESS: full JSON validates against the schema; every project has non-empty
      `slug`, `goal`, and `source_conversation_ids`; deterministic fields match
      `clusters.json` exactly.

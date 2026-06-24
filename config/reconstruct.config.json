@@ -1,16 +1,11 @@
 {
   "_comment": "Committed defaults only — no personal paths. Copy reconstruct.config.example.json to reconstruct.config.local.json for local overrides (gitignored).",
-  "priority_keywords": [
-    "ados", "ados-arena", "opencode", "hermes", "specforge", "mcp", "fastmcp",
-    "ollama", "firecrawl", "repo-classify", "github-catalog", "cursor",
-    "skill", "schema", "benchmark", "trading", "plugin-kit"
-  ],
   "min_slug_votes": 3,
   "char_budget_per_bundle": 48000,
   "ollama_test_home": "~/dev/WSL/ollama/ollama-test",
   "ollama": {
     "host": "http://localhost:11434",
     "model": "gpt-oss:20b",
-    "num_ctx": 65536
+    "num_ctx": 32768
   }
 }

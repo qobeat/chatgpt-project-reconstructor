@@ -19,7 +19,7 @@ Output is flat JSON ready for agentic/Cursor workflows.
 ```
 .zip ──▶ extract_cards ──▶ cluster_projects ──▶ build_bundles ──▶ [LLM] ──▶ reconstructed_projects.json
          Stage 1            Stage 2              Stage 3           Stage 4
-         stream shards      union-find slugs     token-capped      Cursor or Ollama
+         stream shards      union-find slugs     token-capped      local Ollama
          canonical path     from zip basenames   .md per project
 ```
 
@@ -28,7 +28,7 @@ Output is flat JSON ready for agentic/Cursor workflows.
 | 1 | `extract_cards.py` | No | `store/transcripts/`, `cards.jsonl`, `index.json` |
 | 2 | `cluster_projects.py` | No | `store/clusters.json` |
 | 3 | `build_bundles.py` | No | `bundles/<slug>.md` |
-| 4 | `summarize_ollama.py` or Cursor | Yes | `reconstructed_projects.json` |
+| 4 | `summarize_ollama.py` | Yes | `reconstructed_projects.json` |
 
 Modern exports shard conversations across `conversations-000.json … -NNN.json`.
 All shards are streamed; attachments are ignored. By default only clusters that
@@ -49,25 +49,28 @@ cp .env.example .env                  # optional: edit VENV_DIR + data paths
 cp config/reconstruct.config.example.json config/reconstruct.config.local.json  # optional
 bash setup.sh
 
-# Stages 1–3 (deterministic, no LLM tokens)
-./run.sh --zip "<path-to-latest-export>.zip"
+# Everything via one command:  ./reconstruct <command> [options]
+./reconstruct run --zip "<path-to-latest-export>.zip"   # Stages 1–3, no LLM tokens
 
 # Inspect before spending tokens
 cat output/store/clusters.json        # or $RECONSTRUCTOR_DATA_ROOT/store/…
 ls output/bundles/
 
-# Stage 4 — pick one:
-./ollama.sh --model qwen2.5-coder:14b --num-ctx 16384   # local Ollama
-# OR Cursor: attach schema/project_history_schema.json + bundles/<slug>.md,
-#            paste prompts/cursor_extraction_prompt.md (once per bundle)
+# Stage 4 — local Ollama:
+./reconstruct summarize --model qwen2.5-coder:14b --num-ctx 16384
+
+# …or do the whole pipeline (zip -> JSON) in one shot:
+./reconstruct all --zip "<export>.zip" --model qwen2.5-coder:14b
 
 # Publish safe copy to GitHub
-python scripts/export_public.py --md --review
+./reconstruct publish --md --review
 git diff published/
 ```
 
-> Use `./run.sh`, `./ollama.sh`, `./diagnose.sh`, `./run_summary.sh` — they load
-> `.env` and activate the external venv. Bare `python` may fail on Ubuntu 24.
+> `./reconstruct` is the unified front door (run `./reconstruct help`). The
+> per-stage wrappers `./run.sh`, `./ollama.sh`, `./diagnose.sh`,
+> `./run_summary.sh`, `./runs.sh` still work and now share one venv/.env loader;
+> if the venv is missing they warn and fall back to `python3` instead of crashing.
 
 A **run summary** (`output/RUN_SUMMARY_<timestamp>.md`) is written automatically
 at the end of `./run.sh` and `./ollama.sh`. Regenerate anytime with `./run_summary.sh`.
@@ -231,7 +234,7 @@ python scripts/export_public.py --md --review
 
 ### Safe to commit
 
-- All source code, schema, skills, prompts
+- All source code, schema, skills
 - `published/` after `export_public.py --review`
 
 ### Publish checklist
@@ -304,7 +307,7 @@ Stage 4 improvements:
 
 - Use a smaller/faster model (`qwen2.5-coder:14b` beats `gpt-oss:20b` for prose)
 - Lower `--num-ctx` and `--max-chars`
-- Run Cursor Stage 4 in parallel across bundles
+- Use `--incremental` so unchanged bundles reuse cached summaries
 - On re-exports, only re-summarize changed slugs (manual today)
 
 Stage 1 tip: read exports from the Linux filesystem, not `/mnt/c/…`, when possible.
@@ -339,7 +342,7 @@ Keep `--num-ctx` ≤ 32768 for large models on limited GPU RAM.
 | New OpenAI `content_type` | `message_text()` in `scripts/lib/chatgpt_parse.py` |
 | Clustering too coarse/fine | `--min-slug-votes` or slug aliases |
 | Bundle too large | `--char-budget` (stay under model context) |
-| Different LLM | `summarize_ollama.py` or Cursor prompt |
+| Different LLM | `summarize_ollama.py` (swap `--model`/`--host`) |
 | Schema change | `schema/project_history_schema.json` (+ public schema) |
 
 ---
@@ -347,7 +350,8 @@ Keep `--num-ctx` ≤ 32768 for large models on limited GPU RAM.
 ## Project layout
 
 ```
-run.py / run.sh              Stages 1–3 orchestrator + wrapper
+reconstruct                  Unified dispatcher (run/summarize/all/diagnose/…)
+run.py / run.sh              Stages 1–3 orchestrator + wrapper (--summarize chains Stage 4)
 ollama.sh / diagnose.sh      Stage 4 + export diagnostics
 run_summary.sh               Write RUN_SUMMARY_<timestamp>.md
 setup.sh                     Bootstrap external venv + ijson
@@ -374,9 +378,9 @@ scripts/
     chatgpt_parse.py         streaming parser
     paths.py                 data-root resolution
     run_log.py               command log + stage timings
+    activate_env.sh          shared .env + venv loader (sourced by wrappers)
 
 skills/                      Cursor agent skills
-prompts/                     Cursor Stage 4 prompt
 tests/                       unit tests (stdlib unittest)
 output/                      fallback data dir (gitignored)
 MANIFEST.md                  agent execution contract
@@ -443,6 +447,5 @@ easier to operate day-to-day.
 ## Notes
 
 - Exports are cumulative; deleted chats disappear from later snapshots.
-- Everything runs locally. Ollama is fully offline; Cursor sends only the bundles
-  you attach.
+- Everything runs locally and fully offline via Ollama; no data leaves the machine.
 - Only `published/` is intended for GitHub — review before every push.

@@ -26,6 +26,72 @@ import ulog  # noqa: E402
 import paths  # noqa: E402
 
 
+def _pack_transcripts(members, index, tdir, budget) -> List[str]:
+    """
+    Fair-share packing so EVERY conversation contributes to the bundle — the
+    newest chats (and therefore the latest requirements_evolution) are never
+    dropped. Small conversations are kept whole; their unused budget is
+    redistributed (waterfall) to larger ones, which are truncated to their share
+    with an explicit marker. Members must already be in chronological order.
+    """
+    loaded = []
+    for cid in members:
+        meta = index.get(cid, {})
+        tpath = os.path.join(tdir, f"{cid}.txt")
+        if not os.path.exists(tpath):
+            ulog.dbg("READ transcript", tpath, status="missing, skipped")
+            continue
+        try:
+            with open(tpath, "r", encoding="utf-8") as tf:
+                body = tf.read()
+        except OSError as e:
+            ulog.err("READ transcript", tpath, error=e)
+            continue
+        header = (f"\n\n--- conversation {cid} | {meta.get('create_date')} | "
+                  f"{meta.get('title')} ---\n")
+        loaded.append((header, body))
+    if not loaded:
+        return []
+
+    n = len(loaded)
+    allocations: List[int] = [0] * n
+    remaining = max(0, budget)
+    unassigned = list(range(n))
+    # Waterfall: repeatedly hand each unassigned conversation an equal share and
+    # lock in any that fit whole, freeing their surplus for the rest.
+    while unassigned and remaining > 0:
+        share = remaining // len(unassigned)
+        if share <= 0:
+            break
+        progressed = False
+        for i in list(unassigned):
+            need = len(loaded[i][0]) + len(loaded[i][1])
+            if need <= share:
+                allocations[i] = need
+                remaining -= need
+                unassigned.remove(i)
+                progressed = True
+        if not progressed:
+            # Remaining conversations are all larger than an equal share: split
+            # the rest of the budget evenly and truncate each to its allocation.
+            share = remaining // len(unassigned)
+            for i in unassigned:
+                allocations[i] = share
+            break
+
+    chunks: List[str] = []
+    for i, (header, body) in enumerate(loaded):
+        alloc = allocations[i]
+        full = header + body
+        if len(full) <= alloc:
+            chunks.append(full)
+        else:
+            keep = max(0, alloc - len(header))
+            note = "\n[...conversation truncated to fit bundle budget...]"
+            chunks.append(header + body[:keep] + note)
+    return chunks
+
+
 def _cleanup_orphan_bundles(out_dir: str, kept_slugs: set[str]) -> int:
     """Remove stale .md bundles whose slug is no longer in the cluster set."""
     removed = 0
@@ -43,7 +109,7 @@ def _cleanup_orphan_bundles(out_dir: str, kept_slugs: set[str]) -> int:
 
 def main() -> int:
     cfg = paths.load_config()
-    default_char_budget = int(cfg.get("char_budget_per_bundle", 24000))
+    default_char_budget = int(cfg.get("char_budget_per_bundle", 48000))
 
     ap = argparse.ArgumentParser(
         description="Stage 3: build one token-capped LLM bundle per cluster.")
@@ -101,6 +167,12 @@ def main() -> int:
     bundle_index = []
     for c in clusters:
         slug = c["slug"]
+        titles = c["titles"]
+        max_titles = 40
+        titles_field = (
+            titles if len(titles) <= max_titles
+            else titles[:max_titles] + [f"...(+{len(titles) - max_titles} more)"]
+        )
         facts = {
             "slug": slug,
             "start_date": c["start_date"],
@@ -109,7 +181,7 @@ def main() -> int:
             "n_versions": c["n_versions"],
             "version_zip_files": c["version_zip_files"],
             "file_artifacts": c["file_artifacts"][:60],
-            "titles": c["titles"],
+            "titles": titles_field,
         }
         parts: List[str] = []
         parts.append("# DETERMINISTIC FACTS (authoritative — copy verbatim)\n")
@@ -121,26 +193,7 @@ def main() -> int:
             key=lambda cid: (index.get(cid, {}).get("create_time") or 0),
         )
         budget = char_budget - len("".join(parts))
-        for cid in members:
-            meta = index.get(cid, {})
-            tpath = os.path.join(tdir, f"{cid}.txt")
-            if not os.path.exists(tpath):
-                ulog.dbg("READ transcript", tpath, status="missing, skipped")
-                continue
-            try:
-                with open(tpath, "r", encoding="utf-8") as tf:
-                    body = tf.read()
-            except OSError as e:
-                ulog.err("READ transcript", tpath, error=e)
-                continue
-            header = f"\n\n--- conversation {cid} | {meta.get('create_date')} | {meta.get('title')} ---\n"
-            chunk = header + body
-            if len(chunk) > budget:
-                chunk = chunk[: max(0, budget)] + "\n[...bundle budget reached...]"
-                parts.append(chunk)
-                break
-            parts.append(chunk)
-            budget -= len(chunk)
+        parts.extend(_pack_transcripts(members, index, tdir, budget))
 
         out_path = os.path.join(args.out, f"{slug}.md")
         try:

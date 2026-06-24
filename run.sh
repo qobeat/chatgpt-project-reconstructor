@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# run.sh — activate venv then delegate to run.py
+# run.sh — activate venv then delegate to run.py (Stages 1-3)
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "$SCRIPT_DIR/.env"
-    set +a
-fi
-VENV_DIR="${VENV_DIR:-$HOME/.venvs/chatgpt-project-reconstructor}"
-source "$VENV_DIR/bin/activate"
-exec python "$SCRIPT_DIR/run.py" "$@"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/activate_env.sh
+source "$REPO_DIR/scripts/lib/activate_env.sh"
+exec "$PYTHON" "$REPO_DIR/run.py" "$@"

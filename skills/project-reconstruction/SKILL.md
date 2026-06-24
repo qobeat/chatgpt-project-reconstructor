@@ -21,16 +21,14 @@ only writes fuzzy prose fields, schema-constrained.
 3. **build_bundles.py** (Stage 3) — one token-capped `.md` bundle per cluster:
    a `DETERMINISTIC FACTS` JSON header + chronological reduced transcripts,
    hard-capped to a char budget so each project fits an LLM context in one shot.
-4. **LLM summary** (Stage 4, pick one):
-   - Cursor Composer: attach `schema/project_history_schema.json` + a bundle,
-     paste `prompts/cursor_extraction_prompt.md`. Run once per bundle.
+4. **LLM summary** (Stage 4):
    - Local Ollama: `./ollama.sh --model gpt-oss:20b`
      (offline; deterministic facts are merged over the model output).
 
 ## One-shot (deterministic stages)
 ```bash
 ./run.sh --zip "<path-to-latest-export>.zip"
-# then Stage 4 (Cursor or Ollama)
+# then Stage 4 (Ollama)
 ./ollama.sh --model qwen2.5-coder:14b
 ```
 

@@ -52,6 +52,26 @@ def bundle_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def parse_fuzzy(raw: str) -> dict | None:
+    """
+    Parse the model's response into a JSON object, tolerating prose wrappers or
+    trailing junk by salvaging the largest {...} span. Returns None when no JSON
+    object can be recovered (caller treats that as a failed summary).
+    """
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        obj = None
+    if obj is None:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end > start:
+            try:
+                obj = json.loads(raw[start:end + 1])
+            except json.JSONDecodeError:
+                obj = None
+    return obj if isinstance(obj, dict) else None
+
+
 def call_ollama(host: str, model: str, prompt: str, num_ctx: int,
                 timeout: int, keep_alive: str = "24h") -> str:
     payload = {
@@ -133,7 +153,7 @@ def main() -> int:
     default_host = ollama_cfg.get("host", "http://localhost:11434")
     default_model = ollama_cfg.get("model", "gpt-oss:20b")
     default_num_ctx = int(ollama_cfg.get("num_ctx", 32768))
-    default_max_chars = int(cfg.get("char_budget_per_bundle", 24000))
+    default_max_chars = int(cfg.get("char_budget_per_bundle", 48000))
 
     ap = argparse.ArgumentParser(
         description="Stage 4 (optional): fill fuzzy schema fields per project "
@@ -215,6 +235,7 @@ def main() -> int:
     cache = load_cached_projects(out_path) if args.incremental else {}
 
     projects = []
+    failed_slugs: list[str] = []
     for c in clusters:
         slug = c["slug"]
         bpath = os.path.join(bundles, f"{slug}.md")
@@ -254,26 +275,40 @@ def main() -> int:
 
         ulog.log("LLM call", slug, status=f"model={model} ctx={num_ctx}")
         t0 = time.time()
-        fuzzy = {}
+        fuzzy: dict = {}
+        ok = False
         for attempt, ctx in enumerate((num_ctx, num_ctx // 2), start=1):
             try:
                 raw = call_ollama(host, model, prompt, ctx, args.timeout,
                                   keep_alive=args.keep_alive)
-                fuzzy = json.loads(raw)
-                ulog.log("LLM done", slug,
-                         status=f"{time.time()-t0:.0f}s (ctx={ctx})")
-                break
             except Exception as e:
                 ulog.err("LLM call", slug,
                          error=f"attempt {attempt} ctx={ctx}: {e}")
                 if attempt == 1:
                     ulog.log("LLM retry", slug, status=f"halving ctx -> {ctx//2}")
+                continue
+            parsed = parse_fuzzy(raw)
+            if parsed is not None:
+                fuzzy = parsed
+                ok = True
+                ulog.log("LLM done", slug,
+                         status=f"{time.time()-t0:.0f}s (ctx={ctx})")
+                break
+            ulog.err("LLM call", slug,
+                     error=f"attempt {attempt} ctx={ctx}: non-JSON response")
+            if attempt == 1:
+                ulog.log("LLM retry", slug, status=f"halving ctx -> {ctx//2}")
 
+        if not ok:
+            failed_slugs.append(slug)
         projects.append(build_project_entry(c, fuzzy, bhash))
 
+    n_failed = len(failed_slugs)
     result = {
         "generated_by": f"ollama:{model}",
         "n_projects": len(projects),
+        "n_failed": n_failed,
+        "failed_slugs": failed_slugs,
         "projects": projects,
     }
     if args.dry_run:
@@ -291,8 +326,15 @@ def main() -> int:
         ulog.err("WRITE", out_path, error=e)
         run_log.stage_end("summarize", root, error=str(e))
         return 1
-    run_log.stage_end("summarize", root, n_projects=len(projects), model=model)
-    ulog.log("DONE", out_path, status=f"{len(projects)} projects")
+    run_log.stage_end("summarize", root, n_projects=len(projects), model=model,
+                      n_failed=n_failed)
+    ulog.log("DONE", out_path,
+             status=f"{len(projects)} projects ({n_failed} failed)")
+    if n_failed:
+        ulog.err("SUMMARIZE", out_path,
+                 error=f"{n_failed} project(s) have empty fuzzy fields "
+                       f"(LLM failed): {', '.join(failed_slugs[:10])}"
+                       + (" ..." if n_failed > 10 else ""))
 
     if run_label:
         try:
@@ -310,7 +352,7 @@ def main() -> int:
         except Exception as e:
             sys.stderr.write(f"[summarize] Summary skipped: {e}\n")
 
-    return 0
+    return 2 if n_failed else 0
 
 
 if __name__ == "__main__":

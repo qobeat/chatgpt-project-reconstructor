@@ -13,7 +13,7 @@ This pass NEVER calls an LLM and NEVER loads the whole JSON into memory.
 
 Usage:
   python scripts/extract_cards.py --zip /path/a.zip [--zip /path/b.zip ...] \
-      --out output/store [--keywords-file config/reconstruct.config.json]
+      --out output/store [--limit N] [--verbose]
 """
 from __future__ import annotations
 import argparse

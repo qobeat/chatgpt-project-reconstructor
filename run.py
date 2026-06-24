@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-run.py — orchestrate the deterministic pipeline (Stages 1-3).
-
-Stage 4 (LLM summary) is intentionally separate: run it via Cursor Composer
-(prompts/cursor_extraction_prompt.md) or locally:
-    python scripts/summarize_ollama.py ...
+run.py — orchestrate the deterministic pipeline (Stages 1-3), optionally
+chaining Stage 4 (local Ollama summary) with --summarize.
 
 Usage:
   python run.py --zip /path/a.zip --zip /path/b.zip
+  python run.py --zip /path/a.zip --summarize --model qwen2.5-coder:14b
   python run.py --zip /path/a.zip --run-label modeltest --limit 50
-  # then either Cursor Composer, or:
+  # Stage 4 separately:
   python scripts/summarize_ollama.py --model gpt-oss:20b --run-label modeltest
 """
 from __future__ import annotations
@@ -42,16 +40,25 @@ def run(mod: str, *cli: str):
     subprocess.run(cmd, check=True)
 
 
+def run_rc(mod: str, *cli: str) -> int:
+    """Run a stage and return its exit code (no raise on non-zero)."""
+    cmd = [sys.executable, os.path.join(HERE, "scripts", mod), *cli]
+    sys.stderr.write("[run] " + " ".join(cmd) + "\n")
+    return subprocess.run(cmd).returncode
+
+
 def main() -> int:
     cfg = paths.load_config()
-    default_char_budget = cfg.get("char_budget_per_bundle", 24000)
+    default_char_budget = cfg.get("char_budget_per_bundle", 48000)
 
     ap = argparse.ArgumentParser(
         description="Orchestrate deterministic Stages 1-3 (extract -> cluster "
-                    "-> bundle). Stage 4 (LLM) is run separately via Cursor or "
-                    "scripts/summarize_ollama.py.")
-    ap.add_argument("--zip", action="append", required=True, dest="zips",
-                    metavar="PATH", help="Export .zip (repeatable).")
+                    "-> bundle). Add --summarize to chain Stage 4 (local Ollama) "
+                    "in one shot, or run scripts/summarize_ollama.py separately.")
+    ap.add_argument("--zip", action="append", dest="zips",
+                    metavar="PATH", help="Export .zip (repeatable). If omitted, "
+                    "falls back to 'default_zips' in "
+                    "config/reconstruct.config.local.json.")
     ap.add_argument("--run-label", default=None,
                     help="Isolate output under output/runs/<label>/ (store, bundles, "
                          "json). Does not touch the default output/store.")
@@ -76,10 +83,29 @@ def main() -> int:
                     help="Verbose per-file read/write logging.")
     ap.add_argument("--no-summary", action="store_true",
                     help="Do not write output/RUN_SUMMARY_<timestamp>.md.")
+    ap.add_argument("--summarize", action="store_true",
+                    help="One-shot: after Stages 1-3, run Stage 4 (local Ollama) "
+                         "to produce reconstructed_projects.json.")
+    ap.add_argument("--model", default=None,
+                    help="Ollama model for --summarize (default: from config).")
+    ap.add_argument("--num-ctx", type=int, default=None,
+                    help="Ollama context window for --summarize (default: from config).")
     args = ap.parse_args()
 
     char_budget = args.char_budget if args.char_budget is not None else default_char_budget
     run_label = args.run_label
+
+    zips = args.zips
+    if not zips:
+        cfg_zips = cfg.get("default_zips") or []
+        zips = [os.path.expanduser(z) for z in cfg_zips if z
+                and not z.startswith("/path/to/")]
+        if zips:
+            sys.stderr.write(
+                f"[run] No --zip given; using {len(zips)} default_zips from config.\n")
+    if not zips:
+        ap.error("No export .zip provided. Pass --zip PATH (repeatable) or set "
+                 "'default_zips' in config/reconstruct.config.local.json.")
 
     store = paths.store_dir(args.store, run_label=run_label)
     bundles = paths.bundles_dir(args.bundles, run_label=run_label)
@@ -95,7 +121,7 @@ def main() -> int:
     run_log.record_run_start(root)
 
     zip_args = []
-    for z in args.zips:
+    for z in zips:
         zip_args += ["--zip", z]
 
     extract_args = [*zip_args, "--out", store]
@@ -118,10 +144,12 @@ def main() -> int:
         "--min-versions", str(args.min_versions))
     run_log.stage_end("bundle", root)
 
-    if not args.no_summary:
+    # When chaining into Stage 4, let the summarizer write the final run summary
+    # and register the run, so we don't emit a half-finished mid-pipeline report.
+    if not args.no_summary and not args.summarize:
         _write_summary(store, label="Stages 1–3", root=root)
 
-    if run_label:
+    if run_label and not args.summarize:
         try:
             sys.path.insert(0, os.path.join(HERE, "scripts", "lib"))
             from run_catalog import register_run  # noqa: WPS433
@@ -129,15 +157,28 @@ def main() -> int:
         except Exception as e:
             sys.stderr.write(f"[run] Run catalog update skipped: {e}\n")
 
+    if args.summarize:
+        sum_args = ["--store", store, "--bundles", bundles,
+                    "--min-versions", str(args.min_versions)]
+        if run_label:
+            sum_args += ["--run-label", run_label]
+        if args.model:
+            sum_args += ["--model", args.model]
+        if args.num_ctx is not None:
+            sum_args += ["--num-ctx", str(args.num_ctx)]
+        if args.no_summary:
+            sum_args.append("--no-summary")
+        sys.stderr.write("\n[run] Stages 1-3 done; chaining into Stage 4 "
+                         "(--summarize)\n")
+        return run_rc("summarize_ollama.py", *sum_args)
+
     out_json = paths.reconstructed_json(run_label=run_label)
     ollama_hint = "./ollama.sh --model gpt-oss:20b"
     if run_label:
         ollama_hint += f" --run-label {run_label}"
     sys.stderr.write(
-        "\n[next] LLM summary step (pick one):\n"
-        "  A) Cursor Composer: attach schema/project_history_schema.json + "
-        f"{bundles}/*.md, paste prompts/cursor_extraction_prompt.md\n"
-        f"  B) Local Ollama:    {ollama_hint}\n"
+        "\n[next] LLM summary step (Stage 4):\n"
+        f"  Local Ollama: {ollama_hint}\n"
         f"\n  Full JSON lands at: {out_json}\n"
     )
     if run_label:
